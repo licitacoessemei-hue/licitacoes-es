@@ -1,0 +1,384 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Fontes além do PNCP, lidas das páginas públicas (sem login e sem CAPTCHA):
+
+  * SEST SENAT  (compras.sestsenat.org.br)  - portal "Paradigma", precisa de navegador (JavaScript)
+  * FINDES / SENAI / SESI (portaldecompras.findes.org.br) - mesmo portal "Paradigma"
+  * SENAC ES    (es.senac.br/licitacoes)    - página HTML simples
+
+Cada leitor devolve (itens, status). Se um portal mudar ou ficar fora do ar, só ele falha:
+o resto do aplicativo continua funcionando e o motivo aparece na aba "Fontes".
+Os itens usam o mesmo formato do coletor.py, com o campo extra "fonte".
+"""
+import os
+import re
+import subprocess
+import sys
+import urllib.parse
+import urllib.request
+from datetime import datetime, timedelta, timezone
+from html.parser import HTMLParser
+
+BRT = timezone(timedelta(hours=-3))
+USER_AGENT = "Mozilla/5.0 (compatible; coletor-licitacoes/2.0; leitura publica, 1 acesso por execucao)"
+UFS = set("AC AL AP AM BA CE DF ES GO MA MT MS MG PA PB PR PE PI RJ RN RS RO RR SC SP SE TO".split())
+
+FONTES = {
+    "sestsenat": {"nome": "SEST SENAT", "tipo": "paradigma",
+                  "url": "https://compras.sestsenat.org.br/portal/Mural.aspx", "filtrar_uf": True},
+    "findes": {"nome": "FINDES / SENAI / SESI", "tipo": "paradigma",
+               "url": "https://portaldecompras.findes.org.br/portal/Mural.aspx", "filtrar_uf": False},
+    "senac_es": {"nome": "SENAC ES", "tipo": "senac",
+                 "url": "https://es.senac.br/licitacoes"},
+}
+
+
+for _k, _f in FONTES.items():                  # (usado só nos testes) COLETOR_URL_SESTSENAT=... troca o endereço
+    _f["url"] = os.environ.get("COLETOR_URL_" + _k.upper(), _f["url"])
+
+
+def _limpar(t, limite=None):
+    t = re.sub(r"\s+", " ", t or "").strip()
+    if limite and len(t) > limite:
+        t = t[: limite - 1].rstrip() + "…"
+    return t
+
+
+def _norm(t):
+    import unicodedata
+    t = unicodedata.normalize("NFKD", t or "")
+    return re.sub(r"\s+", " ", "".join(c for c in t if not unicodedata.combining(c)).lower()).strip()
+
+
+# ----------------------------------------------------------------------------- datas
+
+_RE_DATA = re.compile(r"(\d{1,2})/(\d{1,2})/(\d{4})(?:[\s,T]+(?:às\s+)?(\d{1,2})\s*(?:[:h]\s*(\d{2})?)(?::\d{2})?\s*(AM|PM)?)?", re.I)
+
+
+def parse_data_hora(texto, hora_padrao=(23, 59)):
+    """Aceita '11/13/2026 8:01 PM' (formato americano, com AM/PM) e '13/11/2026 20:01' / '13/11/2026, 9h'.
+    Devolve 'AAAA-MM-DDTHH:MM:SS' (horário de Brasília) ou ''."""
+    m = _RE_DATA.search(texto or "")
+    if not m:
+        return ""
+    a, b, ano = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    h = int(m.group(4)) if m.group(4) is not None else None
+    mi = int(m.group(5)) if m.group(5) else 0
+    ampm = (m.group(6) or "").upper()
+    if ampm:
+        mes, dia = a, b                      # formato americano
+    elif a > 12:
+        dia, mes = a, b
+    elif b > 12:
+        mes, dia = a, b
+    else:
+        dia, mes = a, b                      # dúvida: padrão brasileiro
+    if h is None:
+        h, mi = hora_padrao
+    elif ampm:
+        h = (h % 12) + (12 if ampm == "PM" else 0)
+    try:
+        return datetime(ano, mes, dia, h, mi).strftime("%Y-%m-%dT%H:%M:%S")
+    except ValueError:
+        return ""
+
+
+def _futuro(iso):
+    try:
+        return datetime.fromisoformat(iso).replace(tzinfo=BRT) >= datetime.now(BRT)
+    except ValueError:
+        return False
+
+
+def _ufs_no_texto(texto):
+    achados = re.findall(r"(?:/|\s-\s|,\s)\s*([A-Z]{2})\b", texto or "")
+    return {u for u in achados if u in UFS}
+
+
+# ----------------------------------------------------------------------------- navegador (portais Paradigma)
+
+def garantir_playwright(log=print):
+    try:
+        import playwright  # noqa: F401
+        return True
+    except ImportError:
+        pass
+    if os.environ.get("GITHUB_ACTIONS") != "true" and not os.environ.get("COLETOR_INSTALAR_NAVEGADOR"):
+        log("  (biblioteca 'playwright' não instalada; portais que exigem JavaScript foram pulados)")
+        return False
+    log("  instalando a biblioteca do navegador (só a primeira vez em cada execução)...")
+    r = subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", "playwright"], capture_output=True, text=True)
+    if r.returncode != 0:
+        log("  não consegui instalar o playwright: " + (r.stderr or r.stdout)[-300:])
+        return False
+    try:
+        import playwright  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _abrir_navegador(p, log=print):
+    tentativas = [{"channel": "chrome"}, {"executable_path": "/usr/bin/google-chrome"},
+                  {"executable_path": "/usr/bin/chromium"}, {}]
+    for rodada in (1, 2):
+        erros = []
+        for kw in tentativas:
+            try:
+                return p.chromium.launch(headless=True, args=["--no-sandbox"], **kw)
+            except Exception as e:                                   # noqa: BLE001
+                erros.append(str(e).splitlines()[0][:120])
+        if rodada == 1 and os.environ.get("GITHUB_ACTIONS") == "true":
+            log("  baixando o Chromium do Playwright...")
+            subprocess.run([sys.executable, "-m", "playwright", "install", "--with-deps", "chromium"],
+                           capture_output=True, text=True)
+    raise RuntimeError("nenhum navegador disponível (%s)" % "; ".join(erros))
+
+
+_JS_TABELAS = """() => [...document.querySelectorAll('table')].map(t => ({
+    cab: [...t.querySelectorAll('th')].map(x => (x.innerText || '').trim()),
+    linhas: [...t.querySelectorAll('tbody tr')].map(tr =>
+        [...tr.querySelectorAll('td')].map(td => (td.innerText || '').trim()))
+}))"""
+
+_JS_PRONTO = """() => [...document.querySelectorAll('table tbody tr')].some(tr => tr.querySelectorAll('td').length >= 6)"""
+
+_SEL_PROXIMA = ["a.paginate_button.next:not(.disabled)", "li.next:not(.disabled) a", "a[aria-label='Next']:not(.disabled)",
+                "a:has-text('Próxima')", "a:has-text('Próximo')", "button:has-text('Próxima')"]
+
+
+def _papel_colunas(cab, ncol):
+    """Descobre qual coluna é qual pelos títulos (português ou inglês); sem títulos, usa a ordem do portal."""
+    papeis = {"codigo": 0, "processo": 1, "unidade": 2, "objeto": 3, "modalidade": 4, "inicio": 5, "fim": 6}
+    achados = {}
+    regras = [("codigo", r"^(c[oó]d|code)"), ("processo", r"process"), ("unidade", r"unid|unit"),
+              ("objeto", r"objet|object"), ("modalidade", r"modal|mode"),
+              ("fim", r"\b(fim|t[eé]rmino|end|encerr)"), ("inicio", r"in[ií]cio|start|abertura")]
+    for i, t in enumerate([_norm(c) for c in cab][:ncol]):
+        for papel, rx in regras:
+            if papel not in achados and re.search(rx, t):
+                achados[papel] = i
+                break
+    return achados if len(achados) >= 5 else papeis
+
+
+def _extrair_linhas(page):
+    tabelas = page.evaluate(_JS_TABELAS)
+    melhor = max(tabelas, key=lambda t: sum(1 for l in t["linhas"] if len(l) >= 6), default=None)
+    if not melhor:
+        return []
+    ncol = max((len(l) for l in melhor["linhas"]), default=0)
+    col = _papel_colunas(melhor["cab"], ncol)
+    saida = []
+    for l in melhor["linhas"]:
+        if len(l) < 6:
+            continue
+        g = lambda papel: l[col[papel]] if papel in col and col[papel] < len(l) else ""       # noqa: E731
+        saida.append({k: g(k) for k in ("codigo", "processo", "unidade", "objeto", "modalidade", "inicio", "fim")})
+    return saida
+
+
+def ler_paradigma(chave, log=print):
+    cfg = FONTES[chave]
+    status = {"nome": cfg["nome"], "url": cfg["url"]}
+    if not garantir_playwright(log):
+        status.update(ok=False, aviso="navegador automático indisponível nesta execução")
+        return [], status
+    from playwright.sync_api import sync_playwright
+    linhas, vistos = [], set()
+    with sync_playwright() as p:
+        navegador = _abrir_navegador(p, log)
+        try:
+            ctx = navegador.new_context(locale="pt-BR", timezone_id="America/Sao_Paulo", user_agent=USER_AGENT,
+                                        viewport={"width": 1366, "height": 900})
+            page = ctx.new_page()
+            page.goto(cfg["url"], wait_until="domcontentloaded", timeout=60000)
+            try:
+                page.wait_for_function(_JS_PRONTO, timeout=45000)
+            except Exception:                                          # noqa: BLE001
+                corpo = _norm(page.inner_text("body"))
+                if re.search(r"no records|nenhum registro|sem registros", corpo):
+                    status.update(ok=True, n=0, aviso="o portal não mostra processos abertos agora")
+                    return [], status
+                raise RuntimeError("a tabela de processos não carregou")
+            for _ in range(25):                                        # páginas, se houver paginação
+                novos = 0
+                for l in _extrair_linhas(page):
+                    k = (l["codigo"], l["processo"], l["objeto"][:60])
+                    if k not in vistos:
+                        vistos.add(k); linhas.append(l); novos += 1
+                clicou = False
+                if novos:
+                    for sel in _SEL_PROXIMA:
+                        alvo = page.locator(sel).first
+                        if alvo.count() and alvo.is_visible():
+                            alvo.click(); page.wait_for_timeout(1500); clicou = True
+                            break
+                if not clicou:
+                    break
+        finally:
+            navegador.close()
+
+    itens = []
+    descartados_uf = 0
+    for l in linhas:
+        fecha = parse_data_hora(l["fim"])
+        if not l["objeto"] or not fecha or not _futuro(fecha):
+            continue
+        ufs = _ufs_no_texto(l["unidade"] + " " + l["objeto"])
+        uf = "?"
+        if cfg.get("filtrar_uf"):
+            if "ES" in ufs or "espirito santo" in _norm(l["objeto"] + " " + l["unidade"]):
+                uf = "ES"
+            elif ufs:
+                descartados_uf += 1
+                continue
+        else:
+            uf = "ES"
+        proc = l["processo"] or l["codigo"]
+        cidade = re.search(r"([A-ZÀ-Ú][A-ZÀ-Ú' ]+)/([A-Z]{2})\s*$", l["unidade"])
+        itens.append({
+            "id": "%s:%s" % (chave, proc), "objeto": _limpar(l["objeto"], 1500),
+            "orgao": _limpar(l["unidade"], 140) or cfg["nome"], "unidade": "",
+            "mun": (cidade.group(1).title() + "/" + cidade.group(2)) if cidade else "",
+            "esfera": "S", "mod": _limpar(l["modalidade"]), "sit": "", "valor": None, "srp": False,
+            "num": _limpar(proc), "abre": parse_data_hora(l["inicio"], (0, 0)), "fecha": fecha,
+            "pub": parse_data_hora(l["inicio"], (0, 0)) or fecha, "origem": cfg["nome"], "link": "",
+            "url": cfg["url"], "fonte": cfg["nome"], "uf": uf,
+        })
+    status.update(ok=True, n=len(itens), lidas=len(linhas), fora_do_es=descartados_uf)
+    if not linhas:
+        status["aviso"] = "tabela vazia"
+    return itens, status
+
+
+# ----------------------------------------------------------------------------- SENAC ES (HTML simples)
+
+SECOES_SENAC = {"chamamento publico": "Chamamento Público", "leilao": "Leilão", "pregoes presenciais": "Pregão Presencial",
+                "pregoes eletronicos": "Pregão Eletrônico", "concorrencias": "Concorrência", "convites": "Convite",
+                "regulamento proprio": "Regulamento"}
+_ENCERRADO = re.compile(r"encerrad|homologad|deserto|fracassad|vencedor|revogad|cancelad|anulad|adjudicad|finalizad", re.I)
+_TITULO = re.compile(r"\b\d{1,4}\s*/\s*\d{4}\b")
+
+
+class _FluxoSenac(HTMLParser):
+    """Lê a página como uma sequência de textos e links (não depende do desenho do HTML).
+    Um edital = textos (título, objeto, data...) seguidos de um ou mais links de PDF; textos que
+    aparecem depois dos links e não parecem um título novo são anotações do mesmo edital."""
+
+    def __init__(self, base):
+        super().__init__(convert_charrefs=True)
+        self.base, self.itens, self.secao = base, [], ""
+        self.textos, self.links, self.notas = [], [], []
+        self._ignorar, self._a = 0, None
+
+    def _fechar_bloco(self):
+        if self.textos and self.links:
+            self.itens.append({"secao": self.secao, "textos": self.textos, "links": self.links, "notas": self.notas})
+        self.textos, self.links, self.notas = [], [], []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("script", "style", "noscript", "template"):
+            self._ignorar += 1
+        elif tag == "a":
+            href = dict(attrs).get("href") or ""
+            if re.search(r"documentolicitatorio|\.pdf(\?|$)", href, re.I):
+                self._a = {"href": urllib.parse.urljoin(self.base, href), "rot": []}
+
+    def handle_endtag(self, tag):
+        if tag in ("script", "style", "noscript", "template"):
+            self._ignorar = max(self._ignorar - 1, 0)
+        elif tag == "a" and self._a is not None:
+            self.links.append((self._a["href"], _limpar(" ".join(self._a["rot"])) or "Documento"))
+            self._a = None
+
+    def handle_data(self, data):
+        if self._ignorar:
+            return
+        t = _limpar(data)
+        if not t:
+            return
+        if self._a is not None:
+            self._a["rot"].append(t)
+            return
+        if _norm(t) in SECOES_SENAC:
+            self._fechar_bloco()
+            self.secao = SECOES_SENAC[_norm(t)]
+            return
+        if self.links:
+            if _TITULO.search(t) and len(t) < 140:
+                self._fechar_bloco()
+                self.textos.append(t)
+            else:
+                self.notas.append(t)
+            return
+        self.textos.append(t)
+
+    def fim(self):
+        self._fechar_bloco()
+        return self.itens
+
+
+def interpretar_senac(html, base="https://es.senac.br/licitacoes"):
+    f = _FluxoSenac(base)
+    f.feed(html)
+    blocos = f.fim()
+    itens = []
+    for b in blocos:
+        textos, notas = b["textos"], b["notas"]
+        titulo = next((t for t in textos if _TITULO.search(t) and len(t) < 140), textos[0])
+        todo = " | ".join(textos + notas)
+        if _ENCERRADO.search(" ".join(notas + [t for t in textos if t != titulo and len(t) < 200])) and not re.search(r"reabert", todo, re.I):
+            continue
+        linha_data = next((t for t in textos if re.search(r"abertura|sess[aã]o|data", t, re.I) and _RE_DATA.search(t)), None) \
+            or next((t for t in textos if _RE_DATA.search(t)), "")
+        fecha = parse_data_hora(linha_data)
+        if not fecha or not _futuro(fecha):
+            continue
+        candidatos = [t for t in textos if t != titulo and t != linha_data and not re.match(r"^(abertura|data)\b", _norm(t))]
+        objeto = max(candidatos, key=len) if candidatos else titulo
+        objeto = re.sub(r"^objeto\s*[:\-–]\s*", "", objeto, flags=re.I)
+        sit = "Suspenso" if re.search(r"suspens", todo, re.I) else ""
+        arqs = [[rot, "Edital" if i == 0 else "Documento", href] for i, (href, rot) in enumerate(b["links"])]
+        itens.append({
+            "id": "senac_es:%s:%s" % (_norm(b["secao"]), _norm(titulo)), "objeto": _limpar("%s – %s" % (titulo, objeto) if objeto != titulo else titulo, 1500),
+            "orgao": "SENAC ES", "unidade": "", "mun": "", "esfera": "S", "mod": b["secao"], "sit": sit,
+            "valor": None, "srp": False, "num": _limpar(titulo), "abre": fecha, "fecha": fecha, "pub": fecha,
+            "origem": "SENAC ES", "link": "", "url": b["links"][0][0], "fonte": "SENAC ES", "uf": "ES", "arqs": arqs,
+        })
+    return itens, len(blocos)
+
+
+def ler_senac(chave="senac_es", log=print):
+    cfg = FONTES[chave]
+    status = {"nome": cfg["nome"], "url": cfg["url"]}
+    req = urllib.request.Request(cfg["url"], headers={"User-Agent": USER_AGENT, "Accept-Language": "pt-BR"})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        html = r.read().decode("utf-8", "replace")
+    itens, lidos = interpretar_senac(html, cfg["url"])
+    status.update(ok=True, n=len(itens), lidas=lidos)
+    if lidos == 0:
+        status.update(ok=False, aviso="não encontrei editais na página (o site pode ter mudado)")
+    return itens, status
+
+
+# ----------------------------------------------------------------------------- orquestração
+
+def coletar_todas(cfg, log=print):
+    """Devolve (itens, {nome: status}). Nunca levanta exceção: cada fonte falha isoladamente."""
+    ligadas = cfg.get("fontes_extra") or {}
+    itens, status = [], {}
+    for chave, f in FONTES.items():
+        if ligadas.get(chave, True) is False:
+            continue
+        log("Lendo %s..." % f["nome"])
+        try:
+            lido, st = (ler_paradigma(chave, log) if f["tipo"] == "paradigma" else ler_senac(chave, log))
+        except Exception as e:                                         # noqa: BLE001
+            lido, st = [], {"nome": f["nome"], "url": f["url"], "ok": False, "aviso": "falhou: %s" % str(e).splitlines()[0][:160]}
+        st["em"] = datetime.now(BRT).isoformat(timespec="seconds")
+        status[f["nome"]] = st
+        itens.extend(lido)
+        log("  %s: %s" % (f["nome"], ("%d abertas" % st.get("n", 0)) if st.get("ok") else st.get("aviso")))
+    return itens, status

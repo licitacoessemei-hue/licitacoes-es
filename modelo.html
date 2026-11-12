@@ -28,6 +28,14 @@ input[type=search],select{width:100%;min-height:44px;margin-top:10px;padding:10p
 .tag.ok{background:#d7ecd8;color:#1b5e20;font-weight:700}
 .intro{margin:12px 14px 0;color:var(--cz);font-size:14px}
 .card.fonte{border-left-color:var(--bd)}
+.ia{margin-top:10px;padding:10px;border:1.5px dashed var(--cz);border-radius:8px;background:#f7f8f9}
+.ia .nota{margin:0 0 8px;color:var(--cz);font-size:13px}
+.ia .btns{margin-top:0}
+.det h4{margin:8px 0 4px;font-size:14px}
+.doc{display:block;padding:6px 0;color:var(--tx);font-size:14px;overflow-wrap:anywhere}
+.item{padding:6px 0;border-top:1px solid var(--bd);color:var(--cz);font-size:13px;overflow-wrap:anywhere}
+.stat{margin-top:6px;font-size:13px;color:var(--cz)}
+.stat.erro{color:var(--bad);font-weight:700}
 .chips{display:flex;gap:8px;overflow-x:auto;padding:10px 12px 4px;-webkit-overflow-scrolling:touch}
 .chip{flex:0 0 auto;min-height:40px;padding:6px 14px;border:1.5px solid var(--bd);border-radius:999px;background:#fff;color:var(--cz);font:600 14px system-ui;white-space:nowrap}
 .chip[aria-pressed=true]{background:#dfe3e8;border-color:var(--cz);color:var(--tx)}
@@ -82,8 +90,8 @@ const DADOS = __DADOS_JSON__;
 "use strict";
 const itens = DADOS.itens || [];
 const POR_PAGINA = 25;
-const ESFERA = {F:"Federal", E:"Estadual", M:"Municipal", D:"Distrital"};
-const est = {aba:"rel", q:"", ramos:new Set(), prazo7:false, novas:false, ordem:"prazo", n:POR_PAGINA};
+const ESFERA = {F:"Federal", E:"Estadual", M:"Municipal", D:"Distrital", S:"Sistema S"};
+const est = {aba:"rel", q:"", ramos:new Set(), prazo7:false, novas:false, extras:false, ordem:"prazo", n:POR_PAGINA};
 
 /* armazenamento local (pode não existir em alguns navegadores) */
 function lerLS(k, pad){ try{ const v=localStorage.getItem(k); return v?JSON.parse(v):pad; }catch(e){ return pad; } }
@@ -113,6 +121,9 @@ function fmtData(d){ const p={}; fmtP.formatToParts(d).forEach(x=>p[x.type]=x.va
 const dt = s => s ? new Date(s.slice(0,19)+"-03:00") : null;           /* horários da API são de Brasília */
 const brl = v => (v==null||v<=1) ? "valor não informado" : new Intl.NumberFormat("pt-BR",{style:"currency",currency:"BRL"}).format(v);
 
+const moeda = v => new Intl.NumberFormat("pt-BR",{style:"currency",currency:"BRL"}).format(v);
+const editalDe = it => (it.arqs && it.arqs.length) ? (it.arqs.find(a=>/edital/i.test(a[1]||"")) || it.arqs[0]) : null;
+
 /* ---------- Google Agenda: abre o evento já preenchido (sem login nem conexão) ---------- */
 const fmtC = new Intl.DateTimeFormat("en-CA",{timeZone:"America/Sao_Paulo",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false});
 function dtAgenda(d){ const p={}; fmtC.formatToParts(d).forEach(x=>p[x.type]=x.value); return p.year+p.month+p.day+"T"+(p.hour==="24"?"00":p.hour)+p.minute+p.second; }
@@ -132,24 +143,36 @@ function linkAgenda(it){
     +"&ctz="+encodeURIComponent("America/Sao_Paulo");
 }
 
+/* ---------- Perguntar à IA: monta a pergunta e abre o Claude / ChatGPT ---------- */
+function perguntaIA(it){
+  const ramos = (DADOS.ramos||[]).join(", ");
+  return [
+    "Estou avaliando participar desta licitação."+(ramos?(" Minha empresa atua em: "+ramos+"."):""),
+    "",
+    "Objeto: "+(it.objeto||"").slice(0,500),
+    "Órgão: "+(it.orgao||it.unidade||"")+(it.mun?(" – "+it.mun):""),
+    "Modalidade: "+(it.mod||"não informada")+" | Valor estimado: "+brl(it.valor)+(it._f?(" | Prazo das propostas: "+fmtData(it._f)):""),
+    (editalDe(it) ? "Link do edital (PDF): "+editalDe(it)[2] : "Link do edital: "+(it.url||it.link||""))+((editalDe(it)&&it.url&&!it.fonte)?("\nPágina no PNCP: "+it.url):""),
+    "",
+    "Tente abrir o link e ler o edital. Se não conseguir, me avise que eu anexo o PDF. Depois resuma: o que será contratado, documentos e atestados exigidos para habilitação, prazos, riscos e pontos de atenção. Em seguida, responda às minhas dúvidas sobre o edital."
+  ].join("\n");
+}
+function copiar(t){ try{ if(navigator.clipboard) navigator.clipboard.writeText(t).catch(()=>{}); }catch(e){} }
+
 /* ---------- outras fontes (atalhos) ---------- */
 const FONTES = [
-  {nome:"PNCP – Portal Nacional de Contratações Públicas", app:true, url:"https://pncp.gov.br/app/editais",
-   desc:"Já alimenta esta lista. Reúne o que prefeituras, estado e União publicam, inclusive de sistemas como Compras.gov.br e Portal de Compras Públicas (aparecem no cartão como \"via ...\")."},
-  {nome:"Compras.gov.br (federal)", app:true, url:"https://www.gov.br/compras/pt-br",
-   desc:"O que esse sistema envia ao PNCP já aparece aqui. Para participar do pregão, é preciso cadastro no próprio sistema."},
-  {nome:"Portal de Compras Públicas", app:true, url:"https://www.portaldecompraspublicas.com.br",
-   desc:"Muitas prefeituras usam. O que é enviado ao PNCP já aparece aqui; para dar lances, use o portal."},
+  {chave:"PNCP", nome:"PNCP – Portal Nacional de Contratações Públicas", app:true, url:"https://pncp.gov.br/app/editais",
+   desc:"Prefeituras, estado e União. Inclui o que vem de sistemas como Compras.gov.br, Licitanet e Portal de Compras Públicas (aparecem no cartão como \"via ...\")."},
+  {chave:"SEST SENAT", nome:"SEST SENAT – Portal de Compras", app:true, url:"https://compras.sestsenat.org.br/portal/Mural.aspx",
+   desc:"Painel de compras do SEST SENAT no Brasil todo. O app mostra as do ES e as que não informam o local (marcadas \"Confirme o local\")."},
+  {chave:"FINDES / SENAI / SESI", nome:"FINDES / SENAI / SESI – Portal de Compras", app:true, url:"https://portaldecompras.findes.org.br/portal/Mural.aspx",
+   desc:"Compras da FINDES, SENAI-ES e SESI-ES. Para participar, é preciso cadastro no portal."},
+  {chave:"SENAC ES", nome:"SENAC ES – Licitações", app:true, url:"https://es.senac.br/licitacoes",
+   desc:"Editais do Senac no Espírito Santo (pregões, concorrências, leilões abertos)."},
   {nome:"Portal de Compras do Governo do ES", app:false, url:"https://compras.es.gov.br",
-   desc:"Compras do Governo do Estado (cadastro de fornecedores e consultas de licitações). Confira aqui também."},
-  {nome:"SEST SENAT – e-Compras", app:false, url:"https://www.sestsenat.org.br/e-compras",
-   desc:"Editais do SEST SENAT. Usa regulamento próprio e publica no próprio site."},
-  {nome:"SENAC ES – Licitações", app:false, url:"https://es.senac.br/licitacoes",
-   desc:"Editais do Senac no Espírito Santo."},
-  {nome:"FINDES / SENAI / SESI – Portal de Compras", app:false, url:"https://portaldecompras.findes.org.br/portal/Mural.aspx",
-   desc:"Compras da FINDES, SENAI-ES e SESI-ES. Abre sem login; precisa de JavaScript ligado no navegador."},
+   desc:"Compras do Governo do Estado (cadastro de fornecedores e consultas de licitações). Muito do que publicam também aparece no PNCP."},
   {nome:"Diário Oficial dos Municípios do ES (AMUNES)", app:false, url:"https://www.diariomunicipal.es.gov.br",
-   desc:"Avisos de licitação de prefeituras que publicam ali. Use a busca do site com palavras como \"manutenção\" ou \"elétrico\"."},
+   desc:"Avisos de licitação de prefeituras que publicam ali. O site não permite leitura automática: use a busca dele com palavras como \"manutenção\" ou \"elétrico\"."},
   {nome:"Diário Oficial do Estado do ES (DIO/ES)", app:false, url:"https://dio.es.gov.br",
    desc:"Caderno de Licitações do Governo do Estado."}
 ];
@@ -189,6 +212,7 @@ function filtrar(){
   if(q.length) L = L.filter(i=>q.every(w=>i._b.indexOf(w)>=0));
   if(est.prazo7) L = L.filter(i=>{ const p=prazo(i); return p.dias>=0 && p.dias<=7; });
   if(est.novas) L = L.filter(ehNova);
+  if(est.extras) L = L.filter(i=>i.fonte);
   const fim = i => i._f ? i._f.getTime() : 9e15;
   const o = est.ordem;
   L = L.slice().sort((a,b)=>{
@@ -209,6 +233,8 @@ function cartao(it){
   const topo = h("div",{class:"topo"},
     ehNova(it) && h("span",{class:"tag novo",text:"NOVA"}),
     (it.ramos||[]).slice(0,2).map(r=>h("span",{class:"tag ramo",text:r})),
+    it.fonte && h("span",{class:"tag ok",text:it.fonte}),
+    it.uf==="?" && h("span",{class:"tag novo",text:"Confirme o local"}),
     it.mod && h("span",{class:"tag",text:it.mod}),
     it.sit && it.sit.toLowerCase().indexOf("suspens")>=0 && h("span",{class:"tag novo",text:it.sit}),
     it.srp && h("span",{class:"tag",text:"Registro de preços"}));
@@ -216,6 +242,21 @@ function cartao(it){
   const wa = "https://wa.me/?text="+encodeURIComponent(
     (it.objeto||"").slice(0,200)+"\n"+it.orgao+" – "+it.mun+"\n"+(it._f?("Encerra: "+fmtData(it._f)+"\n"):"")+(it.url||it.link||""));
   const agenda = linkAgenda(it);
+  const edital = editalDe(it);
+  const temDetalhe = (it.arqs && it.arqs.length>1) || (it.itens && it.itens.length);
+  const detalhe = h("div",{class:"ia det",hidden:true},
+    (it.arqs && it.arqs.length) && h("h4",{text:"Documentos ("+it.arqs.length+")"}),
+    (it.arqs||[]).map(a=>h("a",{class:"doc",href:a[2],target:"_blank",rel:"noopener",text:"📄 "+(a[1]&&a[1]!==a[0]?a[1]+": ":"")+a[0]})),
+    (it.itens && it.itens.length) && h("h4",{text:"Itens ("+(it.nitens||it.itens.length)+")"}),
+    (it.itens||[]).map(x=>h("div",{class:"item",text:(x[0]!=null?x[0]+". ":"")+x[1]+((x[2]!=null||x[4]>1)?" — ":"")+(x[2]!=null?String(x[2]).replace(".",",")+" "+(x[3]||"").toLowerCase():"")+(x[4]>1?" × "+moeda(x[4]):"")})),
+    (it.nitens && it.itens && it.nitens>it.itens.length) && h("div",{class:"item",text:"… e mais "+(it.nitens-it.itens.length)+" itens (veja no PNCP)."}));
+  const perg = perguntaIA(it), pq = encodeURIComponent(perg);
+  const nota = h("p",{class:"nota",text:"Toque em uma IA: o app copia a pergunta e abre a conversa. Se a caixa vier vazia, segure o dedo nela e toque em Colar. Se a IA não conseguir abrir o link do edital, baixe o PDF (botão 📄) e anexe na conversa."});
+  const aoClicarIA = () => { copiar(perg); nota.textContent = "✔ Pergunta copiada. Se a caixa da IA abrir vazia, segure o dedo nela e toque em Colar. Se a IA não conseguir abrir o link do edital, baixe o PDF (botão 📄) e anexe na conversa."; };
+  const painel = h("div",{class:"ia",hidden:true}, nota,
+    h("div",{class:"btns"},
+      h("a",{class:"btn",href:"https://claude.ai/new?q="+pq,target:"_blank",rel:"noopener",text:"Perguntar ao Claude",onclick:aoClicarIA}),
+      h("a",{class:"btn",href:"https://chatgpt.com/?q="+pq,target:"_blank",rel:"noopener",text:"Perguntar ao ChatGPT",onclick:aoClicarIA})));
   const c = h("article",{class:"card "+p.cls},
     topo, obj,
     longo && h("button",{class:"mais",text:"ver tudo",onclick:ev=>{ const aberto=obj.classList.toggle("cort"); ev.target.textContent=aberto?"ver tudo":"ver menos"; }}),
@@ -225,13 +266,17 @@ function cartao(it){
     h("div",{class:"prazo",text:p.txt}),
     (it.termos&&it.termos.length) && h("div",{class:"termos",text:"Apareceu por: "+it.termos.slice(0,6).join(", ")}),
     h("div",{class:"btns"},
-      it.url && h("a",{class:"btn",href:it.url,target:"_blank",rel:"noopener",text:"Abrir no PNCP"}),
+      edital && h("a",{class:"btn",href:edital[2],target:"_blank",rel:"noopener",text:"📄 Baixar edital"}),
+      it.url && !(edital && it.fonte) && h("a",{class:"btn",href:it.url,target:"_blank",rel:"noopener",text:it.fonte?"Abrir no portal":"Abrir no PNCP"}),
       it.link && /^https?:\/\//i.test(it.link) && h("a",{class:"btn",href:it.link,target:"_blank",rel:"noopener",text:"Sistema de origem"}),
       agenda && h("a",{class:"btn",href:agenda,target:"_blank",rel:"noopener",text:"📅 Agenda"}),
       h("button",{class:"btn"+(salva?" on":""),text:salva?"★ Salva":"☆ Salvar",onclick:()=>{
         if(salvas[it.id]) delete salvas[it.id]; else { const cp=Object.assign({},it); delete cp._b; delete cp._p; delete cp._f; delete cp._pub; delete cp._v; salvas[it.id]=cp; }
         gravarLS("lic_salvas", salvas); desenhar(); }}),
-      h("a",{class:"btn",href:wa,target:"_blank",rel:"noopener",text:"Enviar no WhatsApp"})));
+      h("a",{class:"btn",href:wa,target:"_blank",rel:"noopener",text:"Enviar no WhatsApp"}),
+      (temDetalhe) && h("button",{class:"btn",text:"📋 Itens e anexos",onclick:()=>{ detalhe.hidden=!detalhe.hidden; }}),
+      h("button",{class:"btn",text:"🤖 Perguntar à IA",onclick:()=>{ painel.hidden=!painel.hidden; }})),
+    detalhe, painel);
   return c;
 }
 
@@ -244,13 +289,22 @@ function desenharAbas(){
   def.forEach(([k,t,n])=>box.append(h("button",{role:"tab","aria-selected":String(est.aba===k),onclick:()=>{est.aba=k;est.n=POR_PAGINA;desenhar();window.scrollTo(0,0);}},
     h("span",{text:t}), h("small",{text:String(n)}))));
 }
+function statusFonte(f){
+  const st = f.chave && (DADOS.fontes_status||{})[f.chave];
+  if(!f.chave) return null;
+  if(!st) return h("div",{class:"stat",text:"Ainda sem leitura registrada (aparece depois da próxima atualização)."});
+  const quando = st.em ? " · lido em "+fmtData(dt(st.em)) : "";
+  if(st.ok) return h("div",{class:"stat",text:"✔ "+(st.n||0)+((st.n||0)===1?" aberta":" abertas")+" no app"+quando});
+  return h("div",{class:"stat erro",text:"⚠ Não consegui ler agora: "+(st.aviso||"erro")+quando});
+}
 function desenharFontes(){
   const lista = $("lista");
-  lista.append(h("p",{class:"intro",text:"Atalhos para outros portais. Os marcados \"No app\" já alimentam a lista; os de \"Consulta manual\" você abre direto no site e procura por manutenção, elétrico, transformador..."}));
+  lista.append(h("p",{class:"intro",text:"Os portais marcados \"No app\" já alimentam a lista (use o filtro \"Outros portais\"). Os de \"Consulta manual\" você abre direto no site e procura por manutenção, elétrico, transformador..."}));
   FONTES.forEach(f=>lista.append(h("article",{class:"card fonte"},
     h("div",{class:"topo"}, h("span",{class:"tag"+(f.app?" ok":""),text:f.app?"No app":"Consulta manual"})),
     h("p",{class:"obj",text:f.nome}),
     h("div",{class:"meta",text:f.desc}),
+    statusFonte(f),
     h("div",{class:"btns"}, h("a",{class:"btn",href:f.url,target:"_blank",rel:"noopener",text:"Abrir portal"})))));
 }
 function desenharChips(){
@@ -260,6 +314,8 @@ function desenharChips(){
   const mk=(t,on,fn)=>h("button",{class:"chip","aria-pressed":String(on),text:t,onclick:fn});
   box.append(mk("Encerra em 7 dias",est.prazo7,()=>{est.prazo7=!est.prazo7;est.n=POR_PAGINA;desenhar();}));
   box.append(mk("Só novas",est.novas,()=>{est.novas=!est.novas;est.n=POR_PAGINA;desenhar();}));
+  const nExtra = base().filter(i=>i.fonte).length;
+  if(nExtra) box.append(mk("Outros portais ("+nExtra+")",est.extras,()=>{est.extras=!est.extras;est.n=POR_PAGINA;desenhar();}));
   if(est.aba==="rel") (DADOS.ramos||[]).forEach(r=>{
     const n = itens.filter(i=>i.ramos&&i.ramos.indexOf(r)>=0).length;
     box.append(mk(r+" ("+n+")",est.ramos.has(r),()=>{ if(est.ramos.has(r)) est.ramos.delete(r); else est.ramos.add(r); est.n=POR_PAGINA; desenhar(); }));
@@ -291,7 +347,7 @@ if(gerado){
   if(horas>30){ el.classList.add("velho"); el.textContent += " — dados antigos, confira a atualização automática"; }
 }
 if(DADOS.exemplo) $("aviso-exemplo").append(h("div",{class:"aviso",text:"PRÉVIA COM DADOS FICTÍCIOS: serve só para ver como a tela funciona. Nada aqui é licitação real."}));
-$("rodape").textContent = "Fonte: PNCP (Portal Nacional de Contratações Públicas), licitações com propostas abertas em "+(DADOS.uf||"")+". Os filtros por ramo usam palavras-chave e podem errar: confirme sempre no edital e no sistema de origem antes de decidir.";
+$("rodape").textContent = "Fontes: PNCP (licitações com propostas abertas em "+(DADOS.uf||"")+"), SEST SENAT, FINDES/SENAI/SESI e SENAC ES (veja a aba Fontes). Os filtros por ramo usam palavras-chave e podem errar: confirme sempre no edital e no sistema de origem antes de decidir.";
 $("busca").addEventListener("input", e=>{ est.q=e.target.value; est.n=POR_PAGINA; desenhar(); });
 $("ordem").value = est.ordem;
 $("ordem").addEventListener("change", e=>{ est.ordem=e.target.value; gravarLS("lic_ordem", est.ordem); est.n=POR_PAGINA; desenhar(); });

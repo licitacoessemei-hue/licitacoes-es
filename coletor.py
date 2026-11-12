@@ -7,8 +7,10 @@ O que faz, a cada execução:
   1. Busca TODAS as contratações com recebimento de propostas aberto no estado configurado
      (API pública de consultas do PNCP, sem cadastro nem senha).
   2. Classifica cada uma pelos ramos/palavras-chave de config.json.
-  3. Gera docs/index.html (página para o celular, com os dados embutidos) e docs/dados.json.
-  4. Opcional: avisa no celular (app ntfy) sobre licitações relevantes NOVAS.
+  3. Para as licitações relevantes, guarda os arquivos do edital e a lista de itens (API pública do PNCP).
+  4. Lê outras fontes públicas (SEST SENAT, FINDES/SENAI/SESI, SENAC ES) - ver fontes_extra.py.
+  5. Gera docs/index.html (página para o celular, com os dados embutidos) e docs/dados.json.
+  6. Opcional: avisa no celular (app ntfy) sobre licitações relevantes NOVAS.
 
 Só usa a biblioteca padrão do Python (3.9 ou mais novo).
 
@@ -27,9 +29,16 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
+try:
+    import fontes_extra
+except Exception as _e:                      # sem o arquivo fontes_extra.py o app continua só com o PNCP
+    fontes_extra = None
+
 BRT = timezone(timedelta(hours=-3))
 BASE_URL = os.environ.get("PNCP_BASE_URL", "https://pncp.gov.br/api/consulta").rstrip("/")
 ENDPOINT = "/v1/contratacoes/proposta"
+API_PNCP = os.environ.get("PNCP_API_URL", "https://pncp.gov.br/api/pncp/v1").rstrip("/")   # arquivos e itens de cada contratação
+RE_ID_PNCP = re.compile(r"^(\d{14})-\d+-(\d+)/(\d{4})$")
 TAMANHOS_DE_PAGINA = (500, 100, 50, 10)   # a API recusa tamanhos acima do seu limite; testamos do maior ao menor
 USER_AGENT = "Mozilla/5.0 (compatible; coletor-licitacoes/1.0)"
 PESO_FORTE, PESO_FRACO = 3, 1
@@ -89,6 +98,8 @@ def http_get_json(url, tentativas=4, espera=3):
         except urllib.error.HTTPError as e:
             if e.code == 400:
                 raise ParametroInvalido(url)
+            if e.code == 404:
+                return None
             if e.code in (401, 403):
                 raise FalhaDeAcesso(
                     "HTTP %d: o PNCP recusou o acesso. Se estiver rodando fora do Brasil/em nuvem, "
@@ -240,6 +251,111 @@ def montar_itens(registros, cfg, previo):
     return itens, descartadas
 
 
+# ----------------------------------------------------------------------------- arquivos do edital e itens (PNCP)
+
+def _num(v):
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return None
+    return int(v) if v == int(v) else round(v, 4)
+
+
+def enriquecer_pncp(itens, previo, log=print, limite=250, orcamento_s=480):
+    """Para as licitações relevantes, guarda os arquivos (edital, anexos) e os itens de cada contratação.
+    Falhas aqui nunca derrubam a atualização: o cartão simplesmente fica sem esses detalhes."""
+    inicio, ok_n, falhas_seguidas = time.time(), 0, 0
+    agora = agora_brt()
+    alvo = sorted((i for i in itens if i.get("ramos") and not i.get("fonte")), key=lambda i: -(i.get("score") or 0))[:limite]
+    for it in alvo:
+        m = RE_ID_PNCP.match(it.get("id") or "")
+        if not m:
+            continue
+        ant = (previo or {}).get(it["id"]) or {}
+        quando = parse_data(ant.get("enr"))
+        if quando and "arqs" in ant and (agora - quando) < timedelta(hours=6):          # leitura recente: reaproveita
+            for k in ("arqs", "itens", "nitens", "enr"):
+                if k in ant:
+                    it[k] = ant[k]
+            continue
+        if time.time() - inicio > orcamento_s or falhas_seguidas >= 6:
+            log("  (detalhes: parei por tempo/falhas; o restante fica para a próxima atualização)")
+            break
+        base = "%s/orgaos/%s/compras/%s/%d" % (API_PNCP, m.group(1), m.group(3), int(m.group(2)))
+        try:
+            arq = http_get_json(base + "/arquivos", tentativas=2, espera=1) or []
+            try:
+                its = http_get_json(base + "/itens?pagina=1&tamanhoPagina=100", tentativas=2, espera=1)
+            except ParametroInvalido:
+                its = http_get_json(base + "/itens", tentativas=2, espera=1)
+            if isinstance(its, dict):
+                its = its.get("data") or its.get("itens") or []
+            arq = [a for a in arq if isinstance(a, dict) and a.get("url") and a.get("statusAtivo", True)]
+            arq.sort(key=lambda a: (a.get("tipoDocumentoId") != 2, a.get("sequencialDocumento") or 0))   # edital primeiro
+            it["arqs"] = [[limpar(a.get("titulo"), 90) or "Documento", limpar(a.get("tipoDocumentoNome")), a["url"]] for a in arq[:12]]
+            its = [x for x in (its or []) if isinstance(x, dict)]
+            it["nitens"] = len(its)
+            it["itens"] = [[x.get("numeroItem"), limpar(x.get("descricao"), 220), _num(x.get("quantidade")),
+                            limpar(x.get("unidadeMedida")), _num(x.get("valorUnitarioEstimado"))] for x in its[:40]]
+            it["enr"] = agora.isoformat(timespec="seconds")
+            ok_n += 1
+            falhas_seguidas = 0
+        except Exception as e:                                                       # noqa: BLE001
+            falhas_seguidas += 1
+            for k in ("arqs", "itens", "nitens", "enr"):                              # mantém o que já tínhamos
+                if k in ant:
+                    it[k] = ant[k]
+            log("  detalhes de %s: %s" % (it["id"], str(e)[:100]))
+        time.sleep(0.15)
+    log("Detalhes (edital e itens) atualizados em %d licitações relevantes." % ok_n)
+
+
+# ----------------------------------------------------------------------------- outras fontes (SEST SENAT, FINDES, SENAC ES)
+
+def carregar_status_previo(caminho):
+    try:
+        with open(caminho, encoding="utf-8") as f:
+            return json.load(f).get("fontes_status") or {}
+    except (OSError, ValueError):
+        return {}
+
+
+def montar_itens_extra(brutos, cfg, previo, status_prev):
+    ramos, excluir = compilar(cfg)
+    minimo = cfg.get("pontuacao_minima", 2)
+    agora = agora_brt()
+    itens = []
+    for it in brutos:
+        achados = classificar(it.get("objeto") or "", ramos, excluir, minimo)
+        it["ramos"] = sorted(achados, key=lambda n: -achados[n][0])
+        it["termos"] = sorted({t for _, ts in achados.values() for t in ts})
+        it["score"] = max([p for p, _ in achados.values()] or [0])
+        primeira_leitura = previo is None or not (status_prev.get(it.get("fonte")) or {}).get("ok")
+        if primeira_leitura:                          # primeira vez que a fonte é lida: nada vira "nova" nem notifica
+            it["visto"] = it.get("pub") or agora.isoformat(timespec="seconds")
+        else:
+            it["visto"] = (previo.get(it["id"]) or {}).get("visto") or agora.isoformat(timespec="seconds")
+        itens.append(it)
+    return itens
+
+
+def manter_itens_da_ultima_leitura(previo, status, ja_lidos):
+    """Se um portal falhou agora, continua mostrando o que ele tinha na última leitura (enquanto o prazo não passar)."""
+    ids = {i["id"] for i in ja_lidos}
+    agora, mantidos = agora_brt(), []
+    for nome, st in status.items():
+        if st.get("ok"):
+            continue
+        for i in (previo or {}).values():
+            fecha = parse_data(i.get("fecha"))
+            if i.get("fonte") == nome and i["id"] not in ids and fecha and fecha >= agora:
+                mantidos.append(i)
+        if any(i.get("fonte") == nome for i in mantidos):
+            st["aviso"] = (st.get("aviso") or "falhou") + " – mostrando a última leitura que deu certo"
+            st["n"] = sum(1 for i in mantidos if i.get("fonte") == nome)
+    return mantidos
+
+
 # ----------------------------------------------------------------------------- notificação (opcional)
 
 def _brl(v):
@@ -257,13 +373,13 @@ def notificar_ntfy(novos, topico, servidor, log=print):
     try:
         if len(novos) > 5:
             enviar({"topic": topico, "title": "%d novas licitações no ES" % len(novos),
-                    "message": "\n".join("• %s – %s" % (i["ramos"][0], i["mun"]) for i in novos[:12]),
+                    "message": "\n".join("• %s – %s" % (i["ramos"][0], i["mun"] or i.get("fonte") or "") for i in novos[:12]),
                     "tags": ["bell"]})
         else:
             for i in novos:
                 fecha = parse_data(i["fecha"])
                 quando = fecha.strftime("%d/%m %H:%M") if fecha else "prazo não informado"
-                enviar({"topic": topico, "title": "%s – %s" % (i["ramos"][0], i["mun"]),
+                enviar({"topic": topico, "title": "%s – %s" % (i["ramos"][0], i["mun"] or i.get("fonte") or ""),
                         "message": "%s\nEncerra: %s · %s" % (limpar(i["objeto"], 180), quando, _brl(i["valor"])),
                         "click": i["url"] or None, "tags": ["bell"]})
         log("Notificação enviada (%d nova(s))." % len(novos))
@@ -289,6 +405,8 @@ def main():
     ap.add_argument("--modelo", default=os.path.join(aqui, "modelo.html"))
     ap.add_argument("--sem-notificar", action="store_true")
     ap.add_argument("--aceitar-vazio", action="store_true", help="grava mesmo que a API não devolva nenhuma licitação")
+    ap.add_argument("--sem-extras", action="store_true", help="não lê SEST SENAT, FINDES e SENAC ES")
+    ap.add_argument("--sem-detalhes", action="store_true", help="não busca arquivos do edital e itens no PNCP")
     args = ap.parse_args()
 
     with open(args.config, encoding="utf-8") as f:
@@ -308,6 +426,18 @@ def main():
         return 2
 
     itens, descartadas = montar_itens(registros, cfg, previo)
+    if not args.sem_detalhes:
+        enriquecer_pncp(itens, previo)
+    n_pncp = len(itens)
+
+    fontes_status = {}
+    if fontes_extra and not args.sem_extras:
+        brutos, fontes_status = fontes_extra.coletar_todas(cfg)
+        extras = montar_itens_extra(brutos, cfg, previo, carregar_status_previo(caminho_json))
+        extras += manter_itens_da_ultima_leitura(previo, fontes_status, extras)
+        itens += extras
+    fontes_status["PNCP"] = {"nome": "PNCP", "ok": True, "n": n_pncp, "em": agora_brt().isoformat(timespec="seconds")}
+
     relevantes = [i for i in itens if i["ramos"]]
     dados = {
         "gerado_em": agora_brt().isoformat(timespec="seconds"),
@@ -315,6 +445,7 @@ def main():
         "ramos": list(cfg["ramos"].keys()),
         "total_abertas": len(itens),
         "total_relevantes": len(relevantes),
+        "fontes_status": fontes_status,
         "itens": itens,
     }
     with open(caminho_json, "w", encoding="utf-8") as f:
@@ -324,12 +455,14 @@ def main():
 
     print("Concluído: %d abertas (%d descartadas por revogação/prazo), %d relevantes para os seus ramos."
           % (len(itens), descartadas, len(relevantes)))
+    for nome, st in fontes_status.items():
+        print("  fonte %-24s %s" % (nome, ("%d abertas" % st.get("n", 0)) if st.get("ok") else "FALHOU: " + str(st.get("aviso"))))
     for ramo in dados["ramos"]:
         print("  %-34s %d" % (ramo, sum(1 for i in relevantes if ramo in i["ramos"])))
 
     topico = os.environ.get("NTFY_TOPIC", "").strip()
     if topico and previo is not None and not args.sem_notificar:
-        novos = [i for i in relevantes if i["id"] not in previo]
+        novos = [i for i in relevantes if i["id"] not in previo and i["visto"] != i["pub"]]
         if novos:
             notificar_ntfy(novos, topico, os.environ.get("NTFY_SERVER", "https://ntfy.sh").rstrip("/"))
     return 0

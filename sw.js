@@ -1,5 +1,5 @@
 /* Cache simples: tenta a rede primeiro e, sem internet, mostra a última versão vista. */
-const CACHE = "licitacoes-es-v1";
+const CACHE = "licitacoes-es-v2";
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", e => e.waitUntil(self.clients.claim()));
 self.addEventListener("fetch", e => {
