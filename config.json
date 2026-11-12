@@ -1,0 +1,90 @@
+{
+  "uf": "ES",
+  "dias_a_frente": 365,
+  "pontuacao_minima": 2,
+
+  "_como_editar": "fortes = termos que sozinhos já indicam o ramo (3 pontos). fracas = termos de apoio (1 ponto cada). Uma licitação aparece em um ramo quando soma pelo menos 'pontuacao_minima' pontos. Acentos e maiúsculas não importam; 'transformador' também encontra 'transformadores'. Termos de até 4 letras só valem como palavra inteira (ex.: 'led', 'fio'). 'excluir' derruba resultados que só tenham termos fracos.",
+
+  "ramos": {
+    "Manutenção predial": {
+      "fortes": [
+        "manutenção predial", "manutenções prediais", "manutenção preventiva e corretiva predial",
+        "manutenção de edificações", "manutenção de edifícios", "manutenção de prédios",
+        "manutenção de imóveis", "manutenção civil", "conservação predial",
+        "instalações prediais", "reparos prediais", "adequação predial",
+        "manutenção de próprios", "manutenção e conservação de bens imóveis"
+      ],
+      "fracas": [
+        "reforma", "pintura", "impermeabilização", "serviços de engenharia", "obras de manutenção",
+        "hidráulic", "alvenaria", "telhado", "cobertura", "reparo", "manutenção preventiva e corretiva"
+      ]
+    },
+
+    "Manutenção em subestação": {
+      "fortes": [
+        "subestação", "subestações", "cabine primária", "cabine de medição", "cabine de transformação",
+        "média tensão", "painéis de média tensão", "celas de média tensão", "religador", "religadores",
+        "chave seccionadora", "chaves seccionadoras", "ensaios elétricos", "termografia",
+        "manutenção de transformador", "manutenção de transformadores"
+      ],
+      "fracas": [
+        "alta tensão", "quadro de comando", "relé de proteção", "relés de proteção",
+        "banco de capacitores", "aterramento", "spda", "disjuntor de média"
+      ]
+    },
+
+    "Manutenção elétrica": {
+      "fortes": [
+        "manutenção elétrica", "manutenção de instalações elétricas", "instalações elétricas",
+        "instalação elétrica", "serviços elétricos", "manutenção de rede elétrica", "rede elétrica",
+        "redes elétricas", "rede de distribuição", "quadros elétricos", "painéis elétricos",
+        "sistema elétrico", "adequação elétrica", "laudo elétrico", "manutenção preventiva e corretiva elétrica",
+        "serviços de eletricista", "spda", "para-raios"
+      ],
+      "fracas": [
+        "elétric", "eletricista", "iluminação", "cabeamento", "quadro de distribuição", "eletrocalha"
+      ]
+    },
+
+    "Materiais elétricos": {
+      "fortes": [
+        "material elétrico", "materiais elétricos", "material de eletricidade", "materiais de eletricidade",
+        "material de iluminação", "materiais de iluminação", "material para instalação elétrica",
+        "materiais para instalações elétricas", "cabos elétricos", "condutores elétricos"
+      ],
+      "fracas": [
+        "lâmpada", "lâmpadas", "luminária", "luminárias", "disjuntor", "disjuntores",
+        "eletroduto", "eletrodutos", "reator", "reatores", "interruptor", "interruptores",
+        "tomada", "tomadas", "cabo", "cabos", "fio", "fios", "led", "quadro de distribuição"
+      ]
+    },
+
+    "Materiais de manutenção predial": {
+      "fortes": [
+        "material de construção", "materiais de construção", "material de manutenção predial",
+        "materiais de manutenção predial", "materiais para manutenção predial", "material hidráulico",
+        "materiais hidráulicos", "material de pintura", "materiais de pintura", "ferragens",
+        "material para reforma", "materiais para reforma", "material de manutenção", "materiais de manutenção"
+      ],
+      "fracas": [
+        "cimento", "argamassa", "tubos", "conexões", "torneira", "torneiras", "tinta", "tintas",
+        "ferramentas", "parafuso", "parafusos", "cerâmica", "fechadura", "fechaduras", "telha", "telhas",
+        "madeira", "areia", "brita"
+      ]
+    },
+
+    "Transformadores": {
+      "fortes": [
+        "transformador", "transformadores", "trafo", "trafos"
+      ],
+      "fracas": [
+        "alta tensão", "kva", "mva", "óleo isolante", "subestação"
+      ]
+    }
+  },
+
+  "excluir": [
+    "medicament", "veterinár", "leiloeir", "software", "veículo", "veiculo", "automotiv",
+    "merenda", "gênero alimentício", "odontológ", "combustível"
+  ]
+}
