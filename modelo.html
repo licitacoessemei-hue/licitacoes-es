@@ -48,6 +48,13 @@ input[type=search],select{width:100%;min-height:44px;margin-top:10px;padding:10p
 .tag{display:inline-block;font-size:12px;padding:2px 8px;border-radius:999px;background:#e6e9ed;color:var(--cz)}
 .tag.novo{background:#ffe29a;color:var(--tx);font-weight:700}
 .tag.ramo{background:#dfe3e8;color:var(--tx);font-weight:600}
+.tag.poss{background:#fff;border:1.5px dashed var(--cz);color:var(--tx);font-weight:600}
+.doc2{padding:8px 0;border-top:1px solid var(--bd);font-size:14px;overflow-wrap:anywhere}
+.doc2:first-of-type{border-top:0}
+.doc2 .nome{display:block;color:var(--tx);margin-bottom:4px}
+.btns.mini{margin-top:4px;gap:6px}
+.btns.mini .btn{flex:1 1 30%;min-height:40px;font-size:13px}
+.ia .ok{color:var(--ok);font-weight:700}
 .obj{font-weight:600;margin:0 0 6px;overflow-wrap:anywhere}
 .obj.cort{display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
 .mais{background:none;border:0;padding:4px 0;color:var(--cz);font:600 13px system-ui;text-decoration:underline}
@@ -91,7 +98,7 @@ const DADOS = __DADOS_JSON__;
 const itens = DADOS.itens || [];
 const POR_PAGINA = 25;
 const ESFERA = {F:"Federal", E:"Estadual", M:"Municipal", D:"Distrital", S:"Sistema S"};
-const est = {aba:"rel", q:"", ramos:new Set(), prazo7:false, novas:false, extras:false, ordem:"prazo", n:POR_PAGINA};
+const est = {aba:"rel", q:"", ramos:new Set(), prazo7:false, novas:false, extras:false, outros:false, ordem:"prazo", n:POR_PAGINA};
 
 /* armazenamento local (pode não existir em alguns navegadores) */
 function lerLS(k, pad){ try{ const v=localStorage.getItem(k); return v?JSON.parse(v):pad; }catch(e){ return pad; } }
@@ -157,7 +164,64 @@ function perguntaIA(it){
     "Tente abrir o link e ler o edital. Se não conseguir, me avise que eu anexo o PDF. Depois resuma: o que será contratado, documentos e atestados exigidos para habilitação, prazos, riscos e pontos de atenção. Em seguida, responda às minhas dúvidas sobre o edital."
   ].join("\n");
 }
-function copiar(t){ try{ if(navigator.clipboard) navigator.clipboard.writeText(t).catch(()=>{}); }catch(e){} }
+function copiarAntigo(t){
+  try{ const ta=document.createElement("textarea"); ta.value=t; ta.setAttribute("readonly",""); ta.style.cssText="position:fixed;top:0;left:0;opacity:0";
+    document.body.append(ta); ta.select(); ta.setSelectionRange(0,t.length); const ok=document.execCommand("copy"); ta.remove(); return ok; }catch(e){ return false; }
+}
+function copiarTexto(t){                     /* devolve uma promessa: true se copiou */
+  return new Promise(res=>{
+    try{ if(navigator.clipboard && window.isSecureContext){ navigator.clipboard.writeText(t).then(()=>res(true),()=>res(copiarAntigo(t))); return; } }catch(e){}
+    res(copiarAntigo(t));
+  });
+}
+function copiar(t){ copiarTexto(t); }
+
+/* ---------- abrir FORA do app: dentro do app instalado o PDF do edital costuma travar ---------- */
+const naTelaInicial = (function(){ try{ return navigator.standalone===true || matchMedia("(display-mode: standalone)").matches || matchMedia("(display-mode: fullscreen)").matches; }catch(e){ return false; } })();
+const ehIOS = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform==="MacIntel" && navigator.maxTouchPoints>1);
+const ehAndroid = /android/i.test(navigator.userAgent);
+function linkFora(url){                      /* endereço que pede ao celular para abrir no navegador, e não dentro do app */
+  const m = /^(https?):\/\/(.*)$/i.exec(url||"");
+  if(!m || !naTelaInicial) return url;
+  if(ehIOS) return "x-safari-"+m[1].toLowerCase()+"://"+m[2];
+  if(ehAndroid) return "intent://"+m[2]+"#Intent;scheme="+m[1].toLowerCase()+";action=android.intent.action.VIEW;end";
+  return url;
+}
+function botoesArquivo(url, titulo){
+  const aviso = h("div",{class:"stat",hidden:true});
+  const mostra = (t, bom) => { aviso.hidden=false; aviso.className="stat"+(bom?" ok":""); aviso.textContent=t; };
+  return h("div",null,
+    h("div",{class:"btns mini"},
+      naTelaInicial && h("a",{class:"btn",href:linkFora(url),rel:"noopener",text:"↗ Abrir no navegador"}),
+      h("button",{class:"btn",text:"📋 Copiar link",onclick:()=>{ copiarTexto(url).then(ok=>mostra(ok?"✔ Link copiado. Abra o Safari ou o Chrome, cole na barra de endereço e toque em ir.":"Não consegui copiar. Segure o dedo no botão ‘Abrir aqui’ e escolha Copiar.", ok)); }}),
+      (typeof navigator.share==="function") && h("button",{class:"btn",text:"📤 Compartilhar",onclick:()=>{ try{ navigator.share({title:titulo||"Edital",url:url}).catch(()=>{}); }catch(e){} }}),
+      h("a",{class:"btn",href:url,target:"_blank",rel:"noopener",text:naTelaInicial?"Abrir aqui (pode travar)":"📄 Abrir"})),
+    aviso);
+}
+
+/* ---------- edital e itens de licitações que ainda não vieram prontos: busca direto no PNCP (se o PNCP permitir) ---------- */
+const RE_PNCP = /^(\d{14})-\d+-(\d+)\/(\d{4})$/;
+const API_PNCP = "https://pncp.gov.br/api/pncp/v1/orgaos/";
+const podeBuscar = it => !it.fonte && RE_PNCP.test(it.id||"");
+function buscarDetalhes(it){
+  if(it._det) return it._det;
+  const m = RE_PNCP.exec(it.id||"");
+  if(!m || it.fonte) return Promise.reject(new Error("sem id"));
+  const base = API_PNCP+m[1]+"/compras/"+m[3]+"/"+parseInt(m[2],10);
+  const get = u => { const c = (typeof AbortController==="function") ? new AbortController() : null; const t = setTimeout(()=>{ if(c) c.abort(); }, 15000);
+    return fetch(u,{signal:c?c.signal:undefined,headers:{Accept:"application/json"}}).then(r=>{ clearTimeout(t); if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); }); };
+  it._det = Promise.all([get(base+"/arquivos"), get(base+"/itens?pagina=1&tamanhoPagina=100").catch(()=>[])]).then(r=>{
+    const arq = (Array.isArray(r[0])?r[0]:[]).filter(a=>a&&a.url&&a.statusAtivo!==false)
+      .sort((a,b)=>((a.tipoDocumentoId!==2)-(b.tipoDocumentoId!==2))||((a.sequencialDocumento||0)-(b.sequencialDocumento||0)));
+    const its = Array.isArray(r[1]) ? r[1] : ((r[1]&&(r[1].data||r[1].itens))||[]);
+    it.arqs = arq.slice(0,12).map(a=>[String(a.titulo||"Documento").slice(0,90), a.tipoDocumentoNome||"", a.url]);
+    it.nitens = its.length;
+    it.itens = its.slice(0,40).map(x=>[x.numeroItem, String(x.descricao||"").slice(0,220), x.quantidade, x.unidadeMedida, x.valorUnitarioEstimado]);
+    return it;
+  });
+  it._det.catch(()=>{ it._det = null; });
+  return it._det;
+}
 
 /* ---------- outras fontes (atalhos) ---------- */
 const FONTES = [
@@ -180,7 +244,7 @@ const FONTES = [
 function prep(it){
   if(it._p) return it;
   it._p = true; it._f = dt(it.fecha); it._pub = dt(it.pub); it._v = dt(it.visto);
-  it._b = semAcento([it.objeto,it.orgao,it.unidade,it.mun,it.num,it.mod,it.origem,(it.ramos||[]).join(" ")].join(" "));
+  it._b = semAcento([it.objeto,it.orgao,it.unidade,it.mun,it.num,it.mod,it.origem,(it.ramos||[]).join(" "),(it.possivel||[]).join(" ")].join(" "));
   return it;
 }
 itens.forEach(prep);
@@ -199,15 +263,18 @@ function prazo(it){
 const ehNova = it => it._v && gerado && (gerado - it._v) < 36*36e5;
 
 /* ---------- lista filtrada ---------- */
+const noNicho = i => (i.ramos && i.ramos.length) || (i.possivel && i.possivel.length);
+const dosRamos = i => (i.ramos||[]).concat(i.possivel||[]);
 function base(){
   if(est.aba==="sal"){
     return Object.keys(salvas).map(id=>{ const atual=itens.find(i=>i.id===id); return prep(atual||salvas[id]); });
   }
-  return est.aba==="rel" ? itens.filter(i=>i.ramos && i.ramos.length) : itens;
+  if(est.aba==="rel") return itens.filter(i=>i.ramos && i.ramos.length);
+  return est.outros ? itens : itens.filter(noNicho);              /* Todas = só o seu nicho (relevantes + possíveis), a menos que peça os outros */
 }
 function filtrar(){
   let L = base();
-  if(est.aba==="rel" && est.ramos.size) L = L.filter(i=>i.ramos.some(r=>est.ramos.has(r)));
+  if(est.ramos.size && (est.aba==="rel" || est.aba==="todas")) L = L.filter(i=>(est.aba==="rel"?(i.ramos||[]):dosRamos(i)).some(r=>est.ramos.has(r)));
   const q = semAcento(est.q).split(/\s+/).filter(Boolean);
   if(q.length) L = L.filter(i=>q.every(w=>i._b.indexOf(w)>=0));
   if(est.prazo7) L = L.filter(i=>{ const p=prazo(i); return p.dias>=0 && p.dias<=7; });
@@ -224,6 +291,11 @@ function filtrar(){
   return L;
 }
 
+function linhaDoc(a){
+  const nome = (a[1]&&a[1]!==a[0]?a[1]+": ":"")+a[0];
+  return h("div",{class:"doc2"}, h("span",{class:"nome",text:"📄 "+nome}), botoesArquivo(a[2], a[0]));
+}
+
 /* ---------- cartão ---------- */
 function cartao(it){
   const p = prazo(it);
@@ -233,6 +305,7 @@ function cartao(it){
   const topo = h("div",{class:"topo"},
     ehNova(it) && h("span",{class:"tag novo",text:"NOVA"}),
     (it.ramos||[]).slice(0,2).map(r=>h("span",{class:"tag ramo",text:r})),
+    !(it.ramos&&it.ramos.length) && (it.possivel||[]).slice(0,2).map(r=>h("span",{class:"tag poss",text:"Possível: "+r})),
     it.fonte && h("span",{class:"tag ok",text:it.fonte}),
     it.uf==="?" && h("span",{class:"tag novo",text:"Confirme o local"}),
     it.mod && h("span",{class:"tag",text:it.mod}),
@@ -242,14 +315,57 @@ function cartao(it){
   const wa = "https://wa.me/?text="+encodeURIComponent(
     (it.objeto||"").slice(0,200)+"\n"+it.orgao+" – "+it.mun+"\n"+(it._f?("Encerra: "+fmtData(it._f)+"\n"):"")+(it.url||it.link||""));
   const agenda = linkAgenda(it);
+  const buscavel = podeBuscar(it);
+  const temDados = () => (it.arqs && it.arqs.length) || (it.itens && it.itens.length);
+  const painelEdital = h("div",{class:"ia",hidden:true});
+  const detalhe = h("div",{class:"ia det",hidden:true});
+  const aguarde = (alvo, t) => alvo.replaceChildren(h("p",{class:"nota",text:t}));
+  const encher = function(alvo){ const t = h("div",null,Array.prototype.slice.call(arguments,1)); alvo.replaceChildren.apply(alvo, Array.from(t.childNodes)); };   /* como h(): aceita listas, null e false */
+  function montarEdital(){
+    const ed = editalDe(it);
+    if(ed){
+      encher(painelEdital,
+        h("p",{class:"nota",text: naTelaInicial
+          ? "Dentro do app instalado o PDF pode travar. Toque em ‘Abrir no navegador’. Se nada acontecer, toque em ‘Copiar link’ e cole no Safari ou no Chrome."
+          : "Edital pronto. Toque em Abrir para baixar, ou copie o link."}),
+        linhaDoc(ed));
+    } else {
+      encher(painelEdital, h("p",{class:"nota",text:"O órgão ainda não publicou arquivos no PNCP para esta licitação. Veja a página dela no PNCP:"}),
+        it.url && botoesArquivo(it.url, "Licitação no PNCP"));
+    }
+  }
+  function montarFalha(alvo){
+    encher(alvo, h("p",{class:"nota",text:"Não consegui buscar o edital por aqui (o PNCP pode bloquear consultas feitas direto pelo app). Abra a página da licitação no PNCP e baixe de lá:"}),
+      it.url && botoesArquivo(it.url, "Licitação no PNCP"));
+  }
+  function montarDetalhe(){
+    const arqs = it.arqs||[], its = it.itens||[];
+    if(!arqs.length && !its.length){
+      encher(detalhe, h("p",{class:"nota",text:"Nenhum arquivo ou item publicado no PNCP até agora."}), it.url && botoesArquivo(it.url, "Licitação no PNCP"));
+      return;
+    }
+    encher(detalhe,
+      arqs.length>0 && h("h4",{text:"Documentos ("+arqs.length+")"}),
+      arqs.map(a=>linhaDoc(a)),
+      its.length>0 && h("h4",{text:"Itens ("+(it.nitens||its.length)+")"}),
+      its.map(x=>h("div",{class:"item",text:(x[0]!=null?x[0]+". ":"")+x[1]+((x[2]!=null||x[4]>1)?" — ":"")+(x[2]!=null?String(x[2]).replace(".",",")+" "+(x[3]||"").toLowerCase():"")+(x[4]>1?" × "+moeda(x[4]):"")})),
+      (it.nitens && it.nitens>its.length) && h("div",{class:"item",text:"… e mais "+(it.nitens-its.length)+" itens (veja no PNCP)."}));
+  }
+  function abrirEdital(){
+    if(editalDe(it)){ montarEdital(); return; }
+    if(!buscavel){ montarEdital(); return; }
+    aguarde(painelEdital, "Buscando o edital no PNCP…");
+    buscarDetalhes(it).then(()=>{ montarEdital(); if(!detalhe.hidden) montarDetalhe(); }).catch(()=>montarFalha(painelEdital));
+  }
+  function abrirDetalhe(){
+    if(temDados() || !buscavel){ montarDetalhe(); return; }
+    aguarde(detalhe, "Buscando itens e anexos no PNCP…");
+    buscarDetalhes(it).then(()=>{ montarDetalhe(); }).catch(()=>montarFalha(detalhe));
+  }
   const edital = editalDe(it);
-  const temDetalhe = (it.arqs && it.arqs.length>1) || (it.itens && it.itens.length);
-  const detalhe = h("div",{class:"ia det",hidden:true},
-    (it.arqs && it.arqs.length) && h("h4",{text:"Documentos ("+it.arqs.length+")"}),
-    (it.arqs||[]).map(a=>h("a",{class:"doc",href:a[2],target:"_blank",rel:"noopener",text:"📄 "+(a[1]&&a[1]!==a[0]?a[1]+": ":"")+a[0]})),
-    (it.itens && it.itens.length) && h("h4",{text:"Itens ("+(it.nitens||it.itens.length)+")"}),
-    (it.itens||[]).map(x=>h("div",{class:"item",text:(x[0]!=null?x[0]+". ":"")+x[1]+((x[2]!=null||x[4]>1)?" — ":"")+(x[2]!=null?String(x[2]).replace(".",",")+" "+(x[3]||"").toLowerCase():"")+(x[4]>1?" × "+moeda(x[4]):"")})),
-    (it.nitens && it.itens && it.nitens>it.itens.length) && h("div",{class:"item",text:"… e mais "+(it.nitens-it.itens.length)+" itens (veja no PNCP)."}));
+  const btnEdital = (edital && !naTelaInicial)
+    ? h("a",{class:"btn",href:edital[2],target:"_blank",rel:"noopener",text:"📄 Baixar edital"})
+    : ((edital || buscavel) && h("button",{class:"btn",text:"📄 Baixar edital",onclick:()=>{ painelEdital.hidden=!painelEdital.hidden; if(!painelEdital.hidden) abrirEdital(); }}));
   const perg = perguntaIA(it), pq = encodeURIComponent(perg);
   const nota = h("p",{class:"nota",text:"Toque em uma IA: o app copia a pergunta e abre a conversa. Se a caixa vier vazia, segure o dedo nela e toque em Colar. Se a IA não conseguir abrir o link do edital, baixe o PDF (botão 📄) e anexe na conversa."});
   const aoClicarIA = () => { copiar(perg); nota.textContent = "✔ Pergunta copiada. Se a caixa da IA abrir vazia, segure o dedo nela e toque em Colar. Se a IA não conseguir abrir o link do edital, baixe o PDF (botão 📄) e anexe na conversa."; };
@@ -264,19 +380,19 @@ function cartao(it){
     h("div",{class:"meta",text:onde}),
     h("div",{class:"meta",text:brl(it.valor)+(it.num?(" · nº "+it.num):"")+(it.origem?(" · via "+it.origem):"")}),
     h("div",{class:"prazo",text:p.txt}),
-    (it.termos&&it.termos.length) && h("div",{class:"termos",text:"Apareceu por: "+it.termos.slice(0,6).join(", ")}),
+    (it.termos&&it.termos.length) && h("div",{class:"termos",text:(it.via_itens?"Apareceu pelos itens da licitação: ":((it.ramos&&it.ramos.length)?"Apareceu por: ":"Possível por: "))+it.termos.slice(0,6).join(", ")}),
     h("div",{class:"btns"},
-      edital && h("a",{class:"btn",href:edital[2],target:"_blank",rel:"noopener",text:"📄 Baixar edital"}),
+      btnEdital,
       it.url && !(edital && it.fonte) && h("a",{class:"btn",href:it.url,target:"_blank",rel:"noopener",text:it.fonte?"Abrir no portal":"Abrir no PNCP"}),
       it.link && /^https?:\/\//i.test(it.link) && h("a",{class:"btn",href:it.link,target:"_blank",rel:"noopener",text:"Sistema de origem"}),
       agenda && h("a",{class:"btn",href:agenda,target:"_blank",rel:"noopener",text:"📅 Agenda"}),
       h("button",{class:"btn"+(salva?" on":""),text:salva?"★ Salva":"☆ Salvar",onclick:()=>{
-        if(salvas[it.id]) delete salvas[it.id]; else { const cp=Object.assign({},it); delete cp._b; delete cp._p; delete cp._f; delete cp._pub; delete cp._v; salvas[it.id]=cp; }
+        if(salvas[it.id]) delete salvas[it.id]; else { const cp=Object.assign({},it); delete cp._b; delete cp._p; delete cp._f; delete cp._pub; delete cp._v; delete cp._det; salvas[it.id]=cp; }
         gravarLS("lic_salvas", salvas); desenhar(); }}),
       h("a",{class:"btn",href:wa,target:"_blank",rel:"noopener",text:"Enviar no WhatsApp"}),
-      (temDetalhe) && h("button",{class:"btn",text:"📋 Itens e anexos",onclick:()=>{ detalhe.hidden=!detalhe.hidden; }}),
+      (temDados() || buscavel) && h("button",{class:"btn",text:"📋 Itens e anexos",onclick:()=>{ detalhe.hidden=!detalhe.hidden; if(!detalhe.hidden) abrirDetalhe(); }}),
       h("button",{class:"btn",text:"🤖 Perguntar à IA",onclick:()=>{ painel.hidden=!painel.hidden; }})),
-    detalhe, painel);
+    painelEdital, detalhe, painel);
   return c;
 }
 
@@ -284,7 +400,8 @@ function cartao(it){
 const $ = id => document.getElementById(id);
 function desenharAbas(){
   const rel = itens.filter(i=>i.ramos && i.ramos.length).length;
-  const def = [["rel","Relevantes",rel],["todas","Todas",itens.length],["sal","Salvas",Object.keys(salvas).length],["fon","Fontes",FONTES.length]];
+  const nicho = itens.filter(noNicho).length;
+  const def = [["rel","Relevantes",rel],["todas","Todas",nicho],["sal","Salvas",Object.keys(salvas).length],["fon","Fontes",FONTES.length]];
   const box = $("abas"); box.replaceChildren();
   def.forEach(([k,t,n])=>box.append(h("button",{role:"tab","aria-selected":String(est.aba===k),onclick:()=>{est.aba=k;est.n=POR_PAGINA;desenhar();window.scrollTo(0,0);}},
     h("span",{text:t}), h("small",{text:String(n)}))));
@@ -301,7 +418,7 @@ function statusFonte(f){
       if(st.fora_do_es) det += ", "+st.fora_do_es+" de outros estados";
       if(st.encerradas) det += ", "+st.encerradas+" já encerradas";
     }
-    return h("div",{class:"stat",text:"✔ "+(st.n||0)+((st.n||0)===1?" aberta":" abertas")+" no app"+det+quando});
+    return h("div",{class:"stat",text:"✔ "+(st.n||0)+((st.n||0)===1?" aberta":" abertas")+" no app"+det+quando+(st.aviso?" · ⚠ "+st.aviso:"")});
   }
   return h("div",{class:"stat erro",text:"⚠ Não consegui ler agora: "+(st.aviso||"erro")+quando});
 }
@@ -324,8 +441,12 @@ function desenharChips(){
   box.append(mk("Só novas",est.novas,()=>{est.novas=!est.novas;est.n=POR_PAGINA;desenhar();}));
   const nExtra = base().filter(i=>i.fonte).length;
   if(nExtra) box.append(mk("Outros portais ("+nExtra+")",est.extras,()=>{est.extras=!est.extras;est.n=POR_PAGINA;desenhar();}));
-  if(est.aba==="rel") (DADOS.ramos||[]).forEach(r=>{
-    const n = itens.filter(i=>i.ramos&&i.ramos.indexOf(r)>=0).length;
+  if(est.aba==="todas"){
+    const fora = itens.length - itens.filter(noNicho).length;
+    if(fora) box.append(mk("Incluir outros nichos ("+fora+")",est.outros,()=>{est.outros=!est.outros;est.n=POR_PAGINA;desenhar();}));
+  }
+  if(est.aba==="rel" || est.aba==="todas") (DADOS.ramos||[]).forEach(r=>{
+    const n = itens.filter(i=>(est.aba==="rel"?(i.ramos||[]):dosRamos(i)).indexOf(r)>=0).length;
     box.append(mk(r+" ("+n+")",est.ramos.has(r),()=>{ if(est.ramos.has(r)) est.ramos.delete(r); else est.ramos.add(r); est.n=POR_PAGINA; desenhar(); }));
   });
 }
@@ -337,6 +458,9 @@ function desenhar(){
   const L = filtrar();
   $("cont").textContent = L.length+" resultado"+(L.length===1?"":"s");
   const lista = $("lista"); lista.replaceChildren();
+  if(est.aba==="todas") lista.append(h("p",{class:"intro",text: est.outros
+    ? "Mostrando tudo, inclusive licitações de outros assuntos. Toque em ‘Incluir outros nichos’ para voltar só ao seu nicho."
+    : "Mostrando só o que combina com o seu nicho: as Relevantes e as marcadas ‘Possível’ (têm só um indício, confira). Para ver licitações de outros assuntos, toque em ‘Incluir outros nichos’."}));
   if(!L.length){
     lista.append(h("p",{class:"vazio",text: est.aba==="sal" ? "Nenhuma licitação salva. Toque em ☆ Salvar nas que quiser acompanhar." : "Nada encontrado com esses filtros."}));
   } else {
@@ -355,7 +479,7 @@ if(gerado){
   if(horas>30){ el.classList.add("velho"); el.textContent += " — dados antigos, confira a atualização automática"; }
 }
 if(DADOS.exemplo) $("aviso-exemplo").append(h("div",{class:"aviso",text:"PRÉVIA COM DADOS FICTÍCIOS: serve só para ver como a tela funciona. Nada aqui é licitação real."}));
-$("rodape").textContent = "Fontes: PNCP (licitações com propostas abertas em "+(DADOS.uf||"")+"), SEST SENAT, FINDES/SENAI/SESI e SENAC ES (veja a aba Fontes). Os filtros por ramo usam palavras-chave e podem errar: confirme sempre no edital e no sistema de origem antes de decidir.";
+$("rodape").textContent = "Fontes: PNCP (licitações com propostas abertas em "+(DADOS.uf||"")+"), SEST SENAT, FINDES/SENAI/SESI e SENAC ES (veja a aba Fontes). Os filtros por ramo usam palavras-chave (e os itens da licitação) e podem errar: confirme sempre no edital e no sistema de origem antes de decidir.";
 $("busca").addEventListener("input", e=>{ est.q=e.target.value; est.n=POR_PAGINA; desenhar(); });
 $("ordem").value = est.ordem;
 $("ordem").addEventListener("change", e=>{ est.ordem=e.target.value; gravarLS("lic_ordem", est.ordem); est.n=POR_PAGINA; desenhar(); });

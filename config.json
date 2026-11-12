@@ -3,7 +3,7 @@
   "dias_a_frente": 365,
   "pontuacao_minima": 2,
 
-  "_como_editar": "fortes = termos que sozinhos já indicam o ramo (3 pontos). fracas = termos de apoio (1 ponto cada). Uma licitação aparece em um ramo quando soma pelo menos 'pontuacao_minima' pontos. Acentos e maiúsculas não importam; 'transformador' também encontra 'transformadores'. Termos de até 4 letras só valem como palavra inteira (ex.: 'led', 'fio'). 'excluir' derruba resultados que só tenham termos fracos.",
+  "_como_editar": "fortes = termos que sozinhos já indicam o ramo (3 pontos). fracas = termos de apoio (1 ponto; sozinhos colocam a licitação em 'Possíveis'). apoio = palavras comuns (1 ponto) que só contam junto com outro termo. Uma licitação vira 'Relevante' com pelo menos 'pontuacao_minima' pontos. Acentos e maiúsculas não importam; 'transformador' também encontra 'transformadores'. Termos de até 4 letras só valem como palavra inteira. Termos começando com 're:' são expressões regulares (escritas em minúsculas e sem acento) e servem para achar combinações como 'materiais e componentes elétricos'. 'excluir' derruba resultados que só tenham termos fracos.",
 
   "ramos": {
     "Manutenção predial": {
@@ -12,25 +12,39 @@
         "manutenção de edificações", "manutenção de edifícios", "manutenção de prédios",
         "manutenção de imóveis", "manutenção civil", "conservação predial",
         "instalações prediais", "reparos prediais", "adequação predial",
-        "manutenção de próprios", "manutenção e conservação de bens imóveis"
+        "manutenção de próprios", "manutenção e conservação de bens imóveis", "manutenção de bens imóveis",
+        "serviços comuns de engenharia", "serviço comum de engenharia", "obras e serviços de engenharia",
+        "serviços de manutenção e reparos", "manutenção e reparos", "conservação e manutenção predial",
+        "re:manutencao\\W+(?:\\w+\\W+){0,3}(?:de|do|da|dos|das|em|nos?|nas?)\\W+(?:predio|predios|edificac|edificio|imove|imovel|proprios? publicos?)"
       ],
       "fracas": [
-        "reforma", "pintura", "impermeabilização", "serviços de engenharia", "obras de manutenção",
-        "hidráulic", "alvenaria", "telhado", "cobertura", "reparo", "manutenção preventiva e corretiva"
+        "reforma", "reformas", "pintura", "impermeabilização", "serviços de engenharia", "serviço de engenharia",
+        "obras de manutenção", "alvenaria", "telhado", "telhados", "telhas", "gesso", "forro", "revestimento",
+        "esquadria", "esquadrias", "calha", "calhas", "serralheria", "recuperação estrutural", "engenharia civil",
+        "instalações hidráulicas", "instalação hidráulica", "hidrossanitári", "instalações físicas", "cobertura metálica",
+        "re:(?:reform|recuperac|restaurac|adequac|readequac|revitalizac)\\w*\\W+(?:\\w+\\W+){0,3}(?:predio|edificac|edificio|imovel|escola|creche|ubs|ginasio)"
+      ],
+      "apoio": [
+        "manutenção preventiva e corretiva", "manutenção preventiva", "manutenção corretiva", "conservação",
+        "hidráulic", "reparo", "reparos", "ar condicionado", "ar-condicionado", "elevador", "elevadores", "bomba", "gerador"
       ]
     },
 
     "Manutenção em subestação": {
       "fortes": [
-        "subestação", "subestações", "cabine primária", "cabine de medição", "cabine de transformação",
-        "média tensão", "painéis de média tensão", "celas de média tensão", "religador", "religadores",
-        "chave seccionadora", "chaves seccionadoras", "ensaios elétricos", "termografia",
-        "manutenção de transformador", "manutenção de transformadores"
+        "subestação", "subestações", "cabine primária", "cabine de medição", "cabine de transformação", "cabine de força",
+        "painéis de média tensão", "celas de média tensão", "cubículo de média tensão",
+        "religador", "religadores", "chave seccionadora", "chaves seccionadoras", "seccionadora", "ensaios elétricos",
+        "ensaio elétrico", "termografia", "manutenção de transformador", "manutenção de transformadores",
+        "relé de proteção", "relés de proteção", "banco de capacitores",
+        "hexafluoreto", "disjuntor de média", "disjuntores de média"
       ],
       "fracas": [
-        "alta tensão", "quadro de comando", "relé de proteção", "relés de proteção",
-        "banco de capacitores", "aterramento", "spda", "disjuntor de média"
-      ]
+        "média tensão", "alta tensão", "transformador de potência", "transformadores de potência", "transformador de força",
+        "quadro de comando", "painel de comando", "aterramento", "spda", "capacitor", "capacitores",
+        "proteção elétrica", "baixa tensão", "medição de energia"
+      ],
+      "apoio": ["cabine", "gerador", "geradores", "no-break", "nobreak"]
     },
 
     "Manutenção elétrica": {
@@ -39,24 +53,35 @@
         "instalação elétrica", "serviços elétricos", "manutenção de rede elétrica", "rede elétrica",
         "redes elétricas", "rede de distribuição", "quadros elétricos", "painéis elétricos",
         "sistema elétrico", "adequação elétrica", "laudo elétrico", "manutenção preventiva e corretiva elétrica",
-        "serviços de eletricista", "spda", "para-raios"
+        "serviços de eletricista", "spda", "para-raios", "iluminação pública", "parque de iluminação",
+        "pontos de iluminação", "manutenção de iluminação", "manutenção da iluminação", "engenharia elétrica",
+        "projeto elétrico", "projetos elétricos", "infraestrutura elétrica", "obras elétricas", "eletricista", "eletricistas",
+        "fotovoltaic", "energia solar", "usina solar",
+        "re:manutencao\\W+(?:\\w+\\W+){0,4}eletric", "re:eletric\\w*\\W+(?:\\w+\\W+){0,3}manutencao"
       ],
       "fracas": [
-        "elétric", "eletricista", "iluminação", "cabeamento", "quadro de distribuição", "eletrocalha"
-      ]
+        "elétric", "iluminação", "cabeamento", "quadro de distribuição", "eletrocalha", "eletrocalhas"
+      ],
+      "apoio": ["cabo", "cabos", "fio", "fios", "tomada", "tomadas", "led", "energia"]
     },
 
     "Materiais elétricos": {
       "fortes": [
         "material elétrico", "materiais elétricos", "material de eletricidade", "materiais de eletricidade",
         "material de iluminação", "materiais de iluminação", "material para instalação elétrica",
-        "materiais para instalações elétricas", "cabos elétricos", "condutores elétricos"
+        "materiais para instalações elétricas", "cabos elétricos", "condutores elétricos",
+        "componentes elétricos", "componente elétrico", "insumos elétricos", "fios e cabos", "cabos e fios",
+        "lâmpadas led", "lâmpada led", "luminárias led", "luminária led", "disjuntores",
+        "re:(?:materia(?:l|is)|componentes?|insumos?|artigos?|pecas?)\\W+(?:\\w+\\W+){0,4}eletric",
+        "re:eletric\\w*\\W+(?:\\w+\\W+){0,3}(?:materia(?:l|is)|componentes?)"
       ],
       "fracas": [
-        "lâmpada", "lâmpadas", "luminária", "luminárias", "disjuntor", "disjuntores",
-        "eletroduto", "eletrodutos", "reator", "reatores", "interruptor", "interruptores",
-        "tomada", "tomadas", "cabo", "cabos", "fio", "fios", "led", "quadro de distribuição"
-      ]
+        "lâmpada", "lâmpadas", "luminária", "luminárias", "disjuntor", "eletroduto", "eletrodutos", "reator", "reatores",
+        "interruptor", "interruptores", "quadro de distribuição", "contator", "contatores", "fita isolante", "barramento",
+        "refletor", "refletores", "cabo flexível", "cabos flexíveis", "cabos de energia", "cabo de cobre", "fio de cobre",
+        "conector elétrico", "relé", "relés"
+      ],
+      "apoio": ["cabo", "cabos", "fio", "fios", "tomada", "tomadas", "led", "soquete", "plugue"]
     },
 
     "Materiais de manutenção predial": {
@@ -64,13 +89,18 @@
         "material de construção", "materiais de construção", "material de manutenção predial",
         "materiais de manutenção predial", "materiais para manutenção predial", "material hidráulico",
         "materiais hidráulicos", "material de pintura", "materiais de pintura", "ferragens",
-        "material para reforma", "materiais para reforma", "material de manutenção", "materiais de manutenção"
+        "material para reforma", "materiais para reforma", "material de manutenção", "materiais de manutenção",
+        "materiais para obras", "material para obras", "materiais de acabamento", "material de acabamento",
+        "material hidrossanitário", "materiais hidrossanitários",
+        "re:(?:materia(?:l|is)|insumos?)\\W+(?:\\w+\\W+){0,3}(?:reforma|construcao|obras?|predial|hidraulic|pintura|alvenaria|acabamento)"
       ],
       "fracas": [
-        "cimento", "argamassa", "tubos", "conexões", "torneira", "torneiras", "tinta", "tintas",
-        "ferramentas", "parafuso", "parafusos", "cerâmica", "fechadura", "fechaduras", "telha", "telhas",
-        "madeira", "areia", "brita"
-      ]
+        "cimento", "argamassa", "conexões hidráulicas", "torneira", "torneiras", "tinta", "tintas", "ferramentas",
+        "parafuso", "parafusos", "cerâmica", "porcelanato", "fechadura", "fechaduras", "telha", "vergalhão", "vergalhões",
+        "bloco de concreto", "blocos de concreto", "tijolo", "tijolos", "cal hidratada", "registro de gaveta",
+        "vaso sanitário", "louças sanitárias", "chuveiro", "dobradiça", "dobradiças", "brita", "areia"
+      ],
+      "apoio": ["madeira", "vidro", "porta", "portas", "piso", "pisos", "tubo", "tubos", "conexões", "chave", "válvula"]
     },
 
     "Transformadores": {
@@ -78,13 +108,16 @@
         "transformador", "transformadores", "trafo", "trafos"
       ],
       "fracas": [
-        "alta tensão", "kva", "mva", "óleo isolante", "subestação"
-      ]
+        "alta tensão", "kva", "mva", "óleo isolante", "óleo mineral isolante", "subestação"
+      ],
+      "apoio": []
     }
   },
 
   "excluir": [
     "medicament", "veterinár", "leiloeir", "software", "veículo", "veiculo", "automotiv",
-    "merenda", "gênero alimentício", "odontológ", "combustível"
+    "merenda", "gênero alimentício", "gêneros alimentícios", "odontológ", "combustível",
+    "energia elétrica", "fornecimento de energia", "mercado livre", "hospitalar", "laborat",
+    "brinquedo", "uniforme", "passagens aéreas", "informática"
   ]
 }

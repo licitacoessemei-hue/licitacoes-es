@@ -11,6 +11,7 @@ Cada leitor devolve (itens, status). Se um portal mudar ou ficar fora do ar, só
 o resto do aplicativo continua funcionando e o motivo aparece na aba "Fontes".
 Os itens usam o mesmo formato do coletor.py, com o campo extra "fonte".
 """
+import hashlib
 import os
 import re
 import subprocess
@@ -23,6 +24,10 @@ from html.parser import HTMLParser
 
 BRT = timezone(timedelta(hours=-3))
 USER_AGENT = "Mozilla/5.0 (compatible; coletor-licitacoes/2.0; leitura publica, 1 acesso por execucao)"
+# Os portais Paradigma desenham tabelas diferentes conforme o navegador que os abre; o navegador
+# automático se apresenta como um Chrome comum de computador para receber a mesma tabela que a pessoa vê.
+USER_AGENT_NAVEGADOR = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/124.0.0.0 Safari/537.36")
 UFS = set("AC AL AP AM BA CE DF ES GO MA MT MS MG PA PB PR PE PI RJ RN RS RO RR SC SP SE TO".split())
 
 FONTES = {
@@ -198,26 +203,83 @@ def _colunas_de_data(linhas, ncol):
     return cols
 
 
+_RX_DATA = re.compile(r"^\s*\d{1,2}/\d{1,2}/\d{4}")
+_RX_UNIDADE = re.compile(r"\|\s|^\s*(sesi|senai|sest|senat|iel|cindes|findes)\b|^\s*[a-z]\s?\d{2,4}\s*-\s*(sest|senat)", re.I)
+_RX_MODALIDADE = re.compile(r"^\s*(selection|auction|bidding|competition|open |closed |preg[aã]o|concorr|dispensa|convite|"
+                            r"chamamento|leil[aã]o|processo seletivo|tomada|cota[cç][aã]o|credenc|disputa)", re.I)
+_RX_MODALIDADE_EN = re.compile(r"^\s*(selection process|auction|bidding|competition)", re.I)
+_PAPEIS = ("codigo", "processo", "unidade", "objeto", "modalidade", "inicio", "fim")
+_TRADUCAO_MODALIDADE = {"selection process with competition": "Processo seletivo com concorrência",
+                        "selection process without competition": "Processo seletivo sem concorrência"}
+
+
+def _por_titulos(l, col):
+    return {p: (l[col[p]].strip() if p in col and col[p] < len(l) else "") for p in _PAPEIS}
+
+
+def _faz_sentido(d):
+    """A leitura por títulos só vale se o 'objeto' parece um texto de objeto (não uma data, nem a modalidade)."""
+    o = d["objeto"]
+    return bool(o) and not _RX_DATA.match(o) and not _RX_DATA.match(d["unidade"]) \
+        and not (len(o) <= 45 and _RX_MODALIDADE_EN.match(o)) and o != d["unidade"] and o != d["modalidade"]
+
+
+def _por_conteudo(l):
+    """Deduz o papel de cada célula pelo que ela contém, sem depender da ordem das colunas."""
+    cels = [c.strip() for c in l]
+    idx_datas = [i for i, c in enumerate(cels) if _RX_DATA.match(c)]
+    resto = [c for i, c in enumerate(cels) if c and i not in idx_datas]
+    unidades = [c for c in resto if _RX_UNIDADE.search(c) and len(c) <= 160]
+    unidade = min(unidades, key=len) if unidades else ""
+    modal = next((c for c in resto if c != unidade and len(c) <= 45 and _RX_MODALIDADE.match(c)), "")
+    outros = [c for c in resto if c not in (unidade, modal)]
+    objeto = max(outros, key=len) if outros else ""
+    if re.fullmatch(r"[A-Za-z]{2,6}\s?\d[\d./-]{4,}|\d{1,8}", objeto):       # só sobrou um número de processo: não há objeto
+        objeto = ""
+    sobra = [c for c in outros if c != objeto]
+    codigo = next((c for c in sobra if re.fullmatch(r"\d{1,8}", c)), "")
+    processo = next((c for c in sobra if c != codigo), "")
+    if not codigo:                                                   # "2819 CDE 2026002466" numa célula só
+        for c in sobra:
+            m2 = re.fullmatch(r"(\d{1,8})\s+([A-Za-z]{0,6}\s?\d[\d./-]{4,})", c)
+            if m2:
+                codigo, processo = m2.group(1), m2.group(2)
+                break
+    m = re.match(r"^(\d{1,8})\s+([A-Za-z]{0,6}\s?\d[\d./-]{4,})\s+(.+)$", objeto, re.S)     # "2819 CDE 2026002466 texto..."
+    if m and not codigo and not processo:
+        codigo, processo, objeto = m.group(1), m.group(2), m.group(3)
+    return {"codigo": codigo, "processo": processo, "unidade": unidade, "objeto": objeto, "modalidade": modal,
+            "inicio": cels[idx_datas[0]] if idx_datas else "", "fim": cels[idx_datas[-1]] if idx_datas else ""}
+
+
 def _extrair_linhas(page):
+    """Devolve (linhas, diagnostico). O diagnóstico vai para o dados.json para eu conferir o que o portal entregou."""
     tabelas = _todas_tabelas(page)
     melhor = max(tabelas, key=lambda t: sum(1 for l in t["linhas"] if len(l) >= 6), default=None)
     if not melhor:
-        return []
+        return [], {}
+    cheias = [l for l in melhor["linhas"] if len(l) >= 6]
     ncol = max((len(l) for l in melhor["linhas"]), default=0)
     col = _papel_colunas(melhor["cab"], ncol)
-    datas = _colunas_de_data([l for l in melhor["linhas"] if len(l) >= 6], ncol)
+    datas = _colunas_de_data(cheias, ncol)
     if len(datas) >= 2:                      # a primeira data é o início e a última é o encerramento
         col["inicio"], col["fim"] = datas[0], datas[-1]
     elif len(datas) == 1:
         col["fim"] = datas[0]
         col.setdefault("inicio", datas[0])
-    saida = []
-    for l in melhor["linhas"]:
-        if len(l) < 6:
-            continue
-        g = lambda papel: l[col[papel]] if papel in col and col[papel] < len(l) else ""       # noqa: E731
-        saida.append({k: g(k) for k in ("codigo", "processo", "unidade", "objeto", "modalidade", "inicio", "fim")})
-    return saida
+    saida, por_titulo, por_conteudo = [], 0, 0
+    for l in cheias:
+        d = _por_titulos(l, col)
+        if _faz_sentido(d):
+            por_titulo += 1
+        else:
+            d = _por_conteudo(l)
+            por_conteudo += 1
+        saida.append(d)
+    diag = {"titulos": [_limpar(c, 30) for c in melhor["cab"][:10]], "colunas": ncol,
+            "por_titulo": por_titulo, "por_conteudo": por_conteudo,
+            "amostra": [[_limpar(c, 40) for c in l] for l in cheias[:2]]}
+    return saida, diag
 
 
 def ler_paradigma(chave, log=print):
@@ -231,7 +293,7 @@ def ler_paradigma(chave, log=print):
     with sync_playwright() as p:
         navegador = _abrir_navegador(p, log)
         try:
-            ctx = navegador.new_context(locale="en-US", timezone_id="America/Sao_Paulo", user_agent=USER_AGENT,
+            ctx = navegador.new_context(locale="en-US", timezone_id="America/Sao_Paulo", user_agent=USER_AGENT_NAVEGADOR,
                                         viewport={"width": 1366, "height": 900})
             page = ctx.new_page()
             page.goto(cfg["url"], wait_until="domcontentloaded", timeout=60000)
@@ -243,8 +305,11 @@ def ler_paradigma(chave, log=print):
                 raise RuntimeError("a tabela de processos não carregou")
             for _ in range(25):                                        # páginas, se houver paginação
                 novos = 0
-                for l in _extrair_linhas(page):
-                    k = (l["codigo"], l["processo"], l["objeto"][:60])
+                achadas, diag_pagina = _extrair_linhas(page)
+                if diag_pagina and "diag" not in status:
+                    status["diag"] = diag_pagina                      # só a 1ª página
+                for l in achadas:
+                    k = (l["codigo"], l["processo"], l["unidade"], l["objeto"][:60], l["inicio"], l["fim"])
                     if k not in vistos:
                         vistos.add(k); linhas.append(l); novos += 1
                 clicou = False
@@ -269,8 +334,8 @@ def ler_paradigma(chave, log=print):
         if not _futuro(fecha):
             encerradas += 1
             continue
-        if not l["objeto"]:
-            sem_objeto += 1
+        if not l["objeto"] or _RX_DATA.match(l["objeto"]):
+            sem_objeto += 1                                           # nunca mostrar uma data como se fosse o objeto
             continue
         ufs = _ufs_no_texto(l["unidade"] + " " + l["objeto"])
         uf = "?"
@@ -284,11 +349,14 @@ def ler_paradigma(chave, log=print):
             uf = "ES"
         proc = l["processo"] or l["codigo"]
         cidade = re.search(r"([A-ZÀ-Ú][A-ZÀ-Ú' ]+)/([A-Z]{2})\s*$", l["unidade"])
+        ident = "|".join([l["codigo"], l["processo"], l["unidade"], l["objeto"][:80], l["inicio"], l["fim"]])
         itens.append({
-            "id": "%s:%s" % (chave, proc), "objeto": _limpar(l["objeto"], 1500),
+            "id": "%s:%s:%s" % (chave, _limpar(proc)[:40] or "s-n", hashlib.md5(ident.encode("utf-8")).hexdigest()[:8]),
+            "objeto": _limpar(l["objeto"], 1500),
             "orgao": _limpar(l["unidade"], 140) or cfg["nome"], "unidade": "",
             "mun": (cidade.group(1).title() + "/" + cidade.group(2)) if cidade else "",
-            "esfera": "S", "mod": _limpar(l["modalidade"]), "sit": "", "valor": None, "srp": False,
+            "esfera": "S", "mod": _TRADUCAO_MODALIDADE.get(_norm(l["modalidade"]), _limpar(l["modalidade"])),
+            "sit": "", "valor": None, "srp": False,
             "num": _limpar(proc), "abre": parse_data_hora(l["inicio"], (0, 0)), "fecha": fecha,
             "pub": parse_data_hora(l["inicio"], (0, 0)) or fecha, "origem": cfg["nome"], "link": "",
             "url": cfg["url"], "fonte": cfg["nome"], "uf": uf,
@@ -301,6 +369,11 @@ def ler_paradigma(chave, log=print):
         status["aviso"] = "não consegui entender as datas do painel (%d de %d linhas)" % (sem_data, len(linhas))
     elif not linhas:
         status["aviso"] = "tabela vazia"
+    if sem_objeto:
+        status["sem_objeto"] = sem_objeto
+        if not itens:
+            status["ok"] = False
+            status["aviso"] = "li as linhas do painel mas não consegui identificar o objeto (%d linha(s))" % sem_objeto
     return itens, status
 
 

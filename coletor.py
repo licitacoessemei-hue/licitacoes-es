@@ -186,42 +186,113 @@ buscar_abertas.total_paginas = 0
 
 # ----------------------------------------------------------------------------- classificação
 
+RE_LIMPEZA = re.compile(r"tomadas? de precos?|tomadas? de decisao|tomadas? de decisoes")     # "tomada de preços" é modalidade, não tomada elétrica
+
+
 def _padrao(termo):
+    """Termo comum: palavra (ou começo de palavra) sem acento/maiúscula. Termo 're:...': expressão regular
+    escrita já em minúsculas e sem acento (serve para achar 'materiais e componentes elétricos')."""
+    if termo.startswith("re:"):
+        return re.compile(termo[3:])
     t = norm(termo)
     fim = r"(?![a-z0-9])" if len(t) <= 4 else ""      # termos curtos: só palavra inteira
     return re.compile(r"(?<![a-z0-9])" + re.escape(t) + fim)
 
 
+def _sem_repetidos(termos):
+    """'tinta' já acha 'tintas' (termos com mais de 4 letras valem como começo de palavra): para o mesmo peso,
+    o termo mais longo que começa com outro do mesmo grupo não soma pontos de novo."""
+    base = [(norm(kw), peso, apoio) for kw, peso, apoio, _ in termos]
+    saida = []
+    for i, (kw, peso, apoio, pad) in enumerate(termos):
+        if not kw.startswith("re:"):
+            n = base[i][0]
+            if any(j != i and not termos[j][0].startswith("re:") and len(base[j][0]) > 4 and base[j][1:] == (peso, apoio)
+                   and n != base[j][0] and n.startswith(base[j][0]) for j in range(len(termos))):
+                continue
+        saida.append((kw, peso, apoio, pad))
+    return saida
+
+
 def compilar(cfg):
+    """fortes = 3 pontos; fracas = 1 ponto (sozinhas já colocam a licitação em 'Possíveis');
+    apoio = 1 ponto, mas só contam junto com outro termo (palavras comuns como 'cabo' ou 'fio')."""
     ramos = []
     for nome, d in cfg["ramos"].items():
-        termos = [(kw, PESO_FORTE, _padrao(kw)) for kw in d.get("fortes", [])]
-        termos += [(kw, PESO_FRACO, _padrao(kw)) for kw in d.get("fracas", [])]
-        ramos.append((nome, termos))
+        termos = [(kw, PESO_FORTE, False, _padrao(kw)) for kw in d.get("fortes", [])]
+        termos += [(kw, PESO_FRACO, False, _padrao(kw)) for kw in d.get("fracas", [])]
+        termos += [(kw, PESO_FRACO, True, _padrao(kw)) for kw in d.get("apoio", [])]
+        ramos.append((nome, _sem_repetidos(termos)))
     excluir = [_padrao(x) for x in cfg.get("excluir", [])]
     return ramos, excluir
 
 
-def classificar(texto, ramos, excluir, minimo):
-    """Devolve {ramo: (pontos, [termos encontrados])} para os ramos que atingiram a pontuação mínima."""
-    t = norm(texto)
-    achados, fortes = {}, set()
+def classificar_tudo(texto, ramos, excluir, minimo):
+    """Devolve (achados, possiveis); cada um é {ramo: (pontos, [termos])}.
+    achados   = ramos com pontuação mínima (aba Relevantes);
+    possiveis = só se não há 'achados': ramos com 1 termo fraco (entram na aba Todas, marcados 'Possível')."""
+    t = RE_LIMPEZA.sub(" ", norm(texto))
+    achados, possiveis, fortes = {}, {}, set()
     for nome, termos in ramos:
-        pontos, usados, forte = 0, [], False
-        for kw, peso, pad in termos:
+        pontos, proprios, usados, forte = 0, 0, [], False
+        for kw, peso, apoio, pad in termos:
             if pad.search(t):
                 pontos += peso
                 usados.append(kw)
+                if not apoio:
+                    proprios += peso
                 forte = forte or peso == PESO_FORTE
-        if pontos >= minimo:
+        if proprios >= 1 and pontos >= minimo:
             achados[nome] = (pontos, usados)
             if forte:
                 fortes.add(nome)
+        elif proprios >= 1:
+            possiveis[nome] = (pontos, usados)
     if fortes:                       # havendo termo forte em algum ramo, ramos só com termos fracos são ruído
         achados = {n: v for n, v in achados.items() if n in fortes}
-    elif achados and any(p.search(t) for p in excluir):
-        return {}
-    return achados
+    elif (achados or possiveis) and any(p.search(t) for p in excluir):
+        return {}, {}
+    if achados:
+        possiveis = {}
+    return achados, possiveis
+
+
+def classificar(texto, ramos, excluir, minimo):
+    """Compatível com a versão anterior: só os ramos que atingiram a pontuação mínima."""
+    return classificar_tudo(texto, ramos, excluir, minimo)[0]
+
+
+def preparar_classificacao(cfg):
+    ramos, excluir = compilar(cfg)
+    return ramos, excluir, cfg.get("pontuacao_minima", 2)
+
+
+def texto_dos_itens(it, cache):
+    """Descrições dos itens (do PNCP) já guardadas para esta licitação: nos detalhes ou na varredura."""
+    if it.get("itens"):
+        return " ; ".join(str(x[1]) for x in it["itens"] if len(x) > 1 and x[1])
+    return ((cache or {}).get(it.get("id")) or {}).get("t", "")
+
+
+def aplicar_classificacao(it, prep, texto_base, texto_itens=""):
+    """Preenche ramos / possivel / termos / score. Se o objeto não diz nada, tenta pelos itens da licitação."""
+    ramos, excluir, minimo = prep
+    a, p = classificar_tudo(texto_base, ramos, excluir, minimo)
+    via_itens = False
+    if not a and texto_itens:
+        a2, p2 = classificar_tudo(texto_base + " ; " + texto_itens, ramos, excluir, minimo)
+        if a2 or (p2 and not p):
+            a, p, via_itens = a2, p2, True
+    pts = lambda d: sorted(d, key=lambda n: -d[n][0])                                     # noqa: E731
+    it["ramos"] = pts(a)
+    it["possivel"] = pts(p)
+    it["termos"] = sorted({t for _, ts in list(a.values()) + list(p.values()) for t in ts})
+    it["score"] = max([x for x, _ in list(a.values()) + list(p.values())] or [0])
+    if via_itens:
+        it["via_itens"] = True
+    else:
+        it.pop("via_itens", None)
+    return it
 
 
 # ----------------------------------------------------------------------------- montagem dos dados
@@ -261,9 +332,8 @@ def carregar_previo(caminho):
         return None
 
 
-def montar_itens(registros, cfg, previo):
-    ramos, excluir = compilar(cfg)
-    minimo = cfg.get("pontuacao_minima", 2)
+def montar_itens(registros, cfg, previo, cache=None):
+    prep = preparar_classificacao(cfg)
     agora = agora_brt()
     itens, descartadas = [], 0
     for r in registros:
@@ -273,11 +343,10 @@ def montar_itens(registros, cfg, previo):
             descartadas += 1
             continue
         it = simplificar(r)
-        achados = classificar("%s %s" % (r.get("objetoCompra") or "", r.get("informacaoComplementar") or ""),
-                              ramos, excluir, minimo)
-        it["ramos"] = sorted(achados, key=lambda n: -achados[n][0])
-        it["termos"] = sorted({t for _, ts in achados.values() for t in ts})
-        it["score"] = max([p for p, _ in achados.values()] or [0])
+        base_txt = "%s %s" % (r.get("objetoCompra") or "", r.get("informacaoComplementar") or "")
+        ant = (previo or {}).get(it["id"]) or {}
+        aplicar_classificacao(it, prep, base_txt, texto_dos_itens(ant if ant.get("itens") else it, cache))
+        it["_txt"] = base_txt                      # só para as etapas seguintes; não vai para o dados.json
         if previo is None:                       # 1ª execução: usa a data de publicação (evita tudo aparecer como "nova")
             it["visto"] = it["pub"] or agora.isoformat(timespec="seconds")
         else:
@@ -296,15 +365,76 @@ def _num(v):
     return int(v) if v == int(v) else round(v, 4)
 
 
-def enriquecer_pncp(itens, previo, log=print, limite=250, orcamento_s=480):
-    """Para as licitações relevantes, guarda os arquivos (edital, anexos) e os itens de cada contratação.
+def buscar_itens(base):
+    """Lista de itens de uma contratação (API pública do PNCP); aceita as duas formas de resposta."""
+    try:
+        its = http_get_json(base + "/itens?pagina=1&tamanhoPagina=100", tentativas=2, espera=1)
+    except ParametroInvalido:
+        its = http_get_json(base + "/itens", tentativas=2, espera=1)
+    if isinstance(its, dict):
+        its = its.get("data") or its.get("itens") or []
+    return [x for x in (its or []) if isinstance(x, dict)]
+
+
+# Objetos "genéricos" (não dizem o que se compra): vale olhar os itens. E objetos que claramente são de outro assunto.
+RE_GENERICO = re.compile(r"materia(l|is)|insumo|equipamento|produto|ferramenta|suprimento|servico comum|manutencao|obra|engenharia|"
+                         r"reforma|instalac|reparo|conserva|aquisicao de bens|registro de preco")
+RE_OUTRO_ASSUNTO = re.compile(r"medicament|hospitalar|aliment|genero|merenda|odontolog|veterin|uniforme|software|informatica|"
+                              r"combustivel|veiculo|passagem|brinquedo|livro|cesta basica|vacina|leite|carne|pao |limpeza urbana|"
+                              r"mobiliario|credenciamento|leiloeir")
+
+
+def varrer_itens(itens, cache, prep, log=print, limite=150, orcamento_s=180):
+    """Para licitações cujo OBJETO é genérico e não bateu com nenhum ramo, lê os itens no PNCP (uma vez só: fica em
+    cache) e reclassifica por eles. Ex.: 'Aquisição de materiais para a Secretaria' com itens 'disjuntor', 'cabo flexível'."""
+    inicio, lidos, falhas_seguidas = time.time(), 0, 0
+    candidatos = [i for i in itens if not i.get("ramos") and not i.get("possivel") and not i.get("fonte")
+                  and i.get("id") not in cache and RE_GENERICO.search(norm(i.get("objeto")))
+                  and not RE_OUTRO_ASSUNTO.search(norm(i.get("objeto")))]
+    candidatos.sort(key=lambda i: i.get("pub") or "", reverse=True)
+    for it in candidatos[:limite]:
+        m = RE_ID_PNCP.match(it.get("id") or "")
+        if not m:
+            continue
+        if time.time() - inicio > orcamento_s or falhas_seguidas >= 6:
+            log("  (itens: parei por tempo/falhas; o restante fica para a próxima atualização)")
+            break
+        base = "%s/orgaos/%s/compras/%s/%d" % (API_PNCP, m.group(1), m.group(3), int(m.group(2)))
+        try:
+            its = buscar_itens(base)
+            texto = " ; ".join(limpar(x.get("descricao"), 70) for x in its[:15] if x.get("descricao"))
+            cache[it["id"]] = {"t": texto, "d": agora_brt().isoformat(timespec="seconds"), "n": len(its)}
+            aplicar_classificacao(it, prep, it.get("_txt") or it.get("objeto") or "", texto)
+            lidos += 1
+            falhas_seguidas = 0
+        except Exception as e:                                                       # noqa: BLE001
+            falhas_seguidas += 1
+            log("  itens de %s: %s" % (it["id"], str(e)[:100]))
+        time.sleep(0.15)
+    achou = sum(1 for i in itens if i.get("via_itens"))
+    log("Itens lidos em %d licitações de objeto genérico (%d candidatas pendentes); %d entraram nos ramos pelos itens."
+        % (lidos, max(len(candidatos) - lidos, 0), achou))
+
+
+def carregar_cache_itens(caminho):
+    try:
+        with open(caminho, encoding="utf-8") as f:
+            d = json.load(f)
+        return d.get("itens") if isinstance(d.get("itens"), dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def enriquecer_pncp(itens, previo, log=print, limite=400, orcamento_s=300):
+    """Para as licitações do seu nicho (relevantes e possíveis), guarda os arquivos (edital, anexos) e os itens.
     Falhas aqui nunca derrubam a atualização: o cartão simplesmente fica sem esses detalhes."""
     inicio, ok_n, falhas_seguidas = time.time(), 0, 0
     agora = agora_brt()
-    alvo = sorted((i for i in itens if i.get("ramos") and not i.get("fonte")), key=lambda i: -(i.get("score") or 0))[:limite]
+    alvo = sorted((i for i in itens if (i.get("ramos") or i.get("possivel")) and not i.get("fonte")),
+                  key=lambda i: (0 if i.get("ramos") else 1, -(i.get("score") or 0)))[:limite]
     for it in alvo:
         m = RE_ID_PNCP.match(it.get("id") or "")
-        if not m:
+        if not m or it.get("enr"):                                   # já detalhada nesta mesma execução
             continue
         ant = (previo or {}).get(it["id"]) or {}
         quando = parse_data(ant.get("enr"))
@@ -319,12 +449,7 @@ def enriquecer_pncp(itens, previo, log=print, limite=250, orcamento_s=480):
         base = "%s/orgaos/%s/compras/%s/%d" % (API_PNCP, m.group(1), m.group(3), int(m.group(2)))
         try:
             arq = http_get_json(base + "/arquivos", tentativas=2, espera=1) or []
-            try:
-                its = http_get_json(base + "/itens?pagina=1&tamanhoPagina=100", tentativas=2, espera=1)
-            except ParametroInvalido:
-                its = http_get_json(base + "/itens", tentativas=2, espera=1)
-            if isinstance(its, dict):
-                its = its.get("data") or its.get("itens") or []
+            its = buscar_itens(base)
             arq = [a for a in arq if isinstance(a, dict) and a.get("url") and a.get("statusAtivo", True)]
             arq.sort(key=lambda a: (a.get("tipoDocumentoId") != 2, a.get("sequencialDocumento") or 0))   # edital primeiro
             it["arqs"] = [[limpar(a.get("titulo"), 90) or "Documento", limpar(a.get("tipoDocumentoNome")), a["url"]] for a in arq[:12]]
@@ -342,7 +467,7 @@ def enriquecer_pncp(itens, previo, log=print, limite=250, orcamento_s=480):
                     it[k] = ant[k]
             log("  detalhes de %s: %s" % (it["id"], str(e)[:100]))
         time.sleep(0.15)
-    log("Detalhes (edital e itens) atualizados em %d licitações relevantes." % ok_n)
+    log("Detalhes (edital e itens) atualizados em %d licitações do seu nicho." % ok_n)
 
 
 # ----------------------------------------------------------------------------- outras fontes (SEST SENAT, FINDES, SENAC ES)
@@ -356,15 +481,11 @@ def carregar_status_previo(caminho):
 
 
 def montar_itens_extra(brutos, cfg, previo, status_prev):
-    ramos, excluir = compilar(cfg)
-    minimo = cfg.get("pontuacao_minima", 2)
+    prep = preparar_classificacao(cfg)
     agora = agora_brt()
     itens = []
     for it in brutos:
-        achados = classificar(it.get("objeto") or "", ramos, excluir, minimo)
-        it["ramos"] = sorted(achados, key=lambda n: -achados[n][0])
-        it["termos"] = sorted({t for _, ts in achados.values() for t in ts})
-        it["score"] = max([p for p, _ in achados.values()] or [0])
+        aplicar_classificacao(it, prep, it.get("objeto") or "")
         primeira_leitura = previo is None or not (status_prev.get(it.get("fonte")) or {}).get("ok")
         if primeira_leitura:                          # primeira vez que a fonte é lida: nada vira "nova" nem notifica
             it["visto"] = it.get("pub") or agora.isoformat(timespec="seconds")
@@ -464,9 +585,19 @@ def main():
         print("ERRO: a API não devolveu nenhuma licitação; mantendo os dados anteriores.", file=sys.stderr)
         return 2
 
-    itens, descartadas = montar_itens(registros, cfg, previo)
+    caminho_cache = os.path.join(args.saida, "cache_itens.json")
+    cache = carregar_cache_itens(caminho_cache)
+    itens, descartadas = montar_itens(registros, cfg, previo, cache)
+    prep = preparar_classificacao(cfg)
     if not args.sem_detalhes:
-        enriquecer_pncp(itens, previo)
+        varrer_itens(itens, cache, prep)                 # objeto genérico? olha os itens da licitação
+        enriquecer_pncp(itens, previo)                   # edital e itens das licitações do nicho
+        for it in itens:                                 # com os itens à mão, reclassifica (pode promover a 'relevante')
+            if it.get("itens") and not it.get("fonte"):
+                aplicar_classificacao(it, prep, it.get("_txt") or it.get("objeto") or "", texto_dos_itens(it, cache))
+        enriquecer_pncp(itens, previo, orcamento_s=120)  # quem acabou de entrar no nicho pelos itens também recebe o edital
+    for it in itens:
+        it.pop("_txt", None)
     aviso_pncp = None
     faltaram = getattr(buscar_abertas, "faltaram", [])
     if faltaram:                                         # não perde o que estava só nas páginas que falharam
@@ -491,22 +622,27 @@ def main():
         fontes_status["PNCP"]["aviso"] = aviso_pncp
 
     relevantes = [i for i in itens if i["ramos"]]
+    possiveis = [i for i in itens if not i["ramos"] and i.get("possivel")]
     dados = {
         "gerado_em": agora_brt().isoformat(timespec="seconds"),
         "uf": cfg["uf"],
         "ramos": list(cfg["ramos"].keys()),
         "total_abertas": len(itens),
         "total_relevantes": len(relevantes),
+        "total_possiveis": len(possiveis),
         "fontes_status": fontes_status,
         "itens": itens,
     }
     with open(caminho_json, "w", encoding="utf-8") as f:
         json.dump(dados, f, ensure_ascii=False, separators=(",", ":"))
+    ids_atuais = {i["id"] for i in itens}                        # o cache só guarda licitações que ainda estão abertas
+    with open(caminho_cache, "w", encoding="utf-8") as f:
+        json.dump({"itens": {k: v for k, v in cache.items() if k in ids_atuais}}, f, ensure_ascii=False, separators=(",", ":"))
     with open(os.path.join(args.saida, "index.html"), "w", encoding="utf-8") as f:
         f.write(gerar_html(args.modelo, dados))
 
-    print("Concluído: %d abertas (%d descartadas por revogação/prazo), %d relevantes para os seus ramos."
-          % (len(itens), descartadas, len(relevantes)))
+    print("Concluído: %d abertas (%d descartadas por revogação/prazo), %d relevantes e %d possíveis para os seus ramos."
+          % (len(itens), descartadas, len(relevantes), len(possiveis)))
     for nome, st in fontes_status.items():
         print("  fonte %-24s %s" % (nome, ("%d abertas" % st.get("n", 0)) if st.get("ok") else "FALHOU: " + str(st.get("aviso"))))
     for ramo in dados["ramos"]:

@@ -39,16 +39,25 @@ Quem souber o nome do tópico lê os avisos, então não divulgue. Os avisos só
 Abra `config.json` no GitHub (lápis de editar), altere e faça *Commit*. A próxima atualização já usa a nova lista (ou rode manualmente em *Actions*).
 
 - `fortes`: termos que sozinhos já indicam o ramo (3 pontos).
-- `fracas`: termos de apoio (1 ponto cada). Uma licitação entra no ramo com 2 pontos ou mais.
-- `excluir`: derruba resultados que só tenham termos fracos (ex.: "veículo", "software").
+- `fracas`: termos de apoio (1 ponto cada). Uma licitação entra no ramo com 2 pontos ou mais. Com apenas **um** termo fraco ela vai para *Todas* marcada como **"Possível"** (um indício só: confira).
+- `apoio`: palavras comuns como "cabo", "fio", "tomada", "led" (1 ponto). Elas só contam junto com outro termo do ramo, para não trazer cabo de vassoura ou tomada de preços.
+- `excluir`: derruba resultados que só tenham termos fracos (ex.: "veículo", "software", "energia elétrica").
+- Termos que começam com `re:` são expressões regulares (em minúsculas e sem acento). Servem para achar combinações, como "materiais **e componentes** elétricos" ou "manutenção **preventiva e corretiva de** prédios".
 - Acentos e maiúsculas não importam, e "transformador" também acha "transformadores". Termos de até 4 letras valem só como palavra inteira ("led", "fio").
-- Em cada cartão aparece *"Apareceu por: ..."* para você ver por que ele foi selecionado e ajustar a lista.
+- Em cada cartão aparece *"Apareceu por: ..."* (ou *"Apareceu pelos itens da licitação: ..."*) para você ver por que ele foi selecionado e ajustar a lista.
+
+## Abas Relevantes e Todas
+
+- **Relevantes**: licitações que atingiram a pontuação mínima em algum dos seus ramos.
+- **Todas**: o seu nicho completo = Relevantes + as marcadas "Possível". Para ver também licitações de outros assuntos, toque em **Incluir outros nichos**.
+- Todo cartão do PNCP tem **Baixar edital** e **Itens e anexos**. Quando o app não trouxe esses dados prontos, ele tenta buscá-los no PNCP na hora do toque.
+- **Baixar edital no app instalado:** o celular pode travar ao abrir PDF dentro do app. Por isso, no app instalado o botão abre um painel com **Abrir no navegador**, **Copiar link** e **Compartilhar**.
 
 ## O que o app cobre e o que não cobre
 
 - **Cobre** o que é publicado no PNCP, que é obrigatório para a Lei 14.133/2021. No teste apareceram publicações vindas do Compras.gov.br, Licitanet e Portal de Compras Públicas.
 - **Não cobre:** Sistema S, estatais e concessionárias com regulamento próprio, e municípios com até 20 mil habitantes que ainda não integraram ao PNCP (prazo até 1º/04/2027).
-- A busca olha o **objeto e as informações complementares** do edital, não a lista de itens. Um registro de preços genérico ("material de consumo") pode ter itens elétricos e não aparecer em *Relevantes*. Use a aba *Todas* com a busca.
+- A busca olha o **objeto e as informações complementares** do edital e, quando o objeto é genérico ("aquisição de materiais"), também os **itens** da licitação (lidos no PNCP, no máximo 150 novas por atualização). O que ainda escapar aparece em *Todas > Incluir outros nichos* com a busca.
 - Valor "não informado" aparece quando o órgão informa 0, 1 real ou sigilo.
 - O app ajuda a **achar** oportunidades. Prazos, exigências e habilitação devem ser conferidos sempre no edital.
 
