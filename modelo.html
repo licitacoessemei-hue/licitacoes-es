@@ -21,8 +21,13 @@ h1{font-size:20px;margin:0}
 .aviso{margin:10px 12px 0;padding:10px 12px;border:2px dashed var(--cz);border-radius:8px;background:#fff;font-weight:700;color:var(--tx)}
 input[type=search],select{width:100%;min-height:44px;margin-top:10px;padding:10px 12px;border:1.5px solid var(--bd);border-radius:8px;font:16px system-ui;color:var(--tx);background:#fff}
 .tabs{position:sticky;top:0;z-index:5;display:flex;background:#fff;border-bottom:2px solid var(--bd);padding-top:env(safe-area-inset-top)}
-.tabs button{flex:1;min-height:48px;border:0;border-bottom:4px solid transparent;margin-bottom:-2px;background:#fff;color:var(--gr);font:600 14px system-ui}
+.tabs button{flex:1 1 0;min-width:0;min-height:54px;padding:4px 2px;border:0;border-bottom:4px solid transparent;margin-bottom:-2px;background:#fff;color:var(--gr);font:600 13px/1.25 system-ui;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.tabs button small{font:700 13px system-ui;color:var(--gr)}
 .tabs button[aria-selected=true]{color:var(--tx);border-bottom-color:var(--cz)}
+.tabs button[aria-selected=true] small{color:var(--tx)}
+.tag.ok{background:#d7ecd8;color:#1b5e20;font-weight:700}
+.intro{margin:12px 14px 0;color:var(--cz);font-size:14px}
+.card.fonte{border-left-color:var(--bd)}
 .chips{display:flex;gap:8px;overflow-x:auto;padding:10px 12px 4px;-webkit-overflow-scrolling:touch}
 .chip{flex:0 0 auto;min-height:40px;padding:6px 14px;border:1.5px solid var(--bd);border-radius:999px;background:#fff;color:var(--cz);font:600 14px system-ui;white-space:nowrap}
 .chip[aria-pressed=true]{background:#dfe3e8;border-color:var(--cz);color:var(--tx)}
@@ -58,7 +63,7 @@ input[type=search],select{width:100%;min-height:44px;margin-top:10px;padding:10p
 <div id="aviso-exemplo"></div>
 <div class="tabs" role="tablist" id="abas"></div>
 <div class="chips" id="chips"></div>
-<div class="barra">
+<div class="barra" id="barra">
   <span class="cont" id="cont"></span>
   <select id="ordem" aria-label="Ordenar">
     <option value="prazo">Encerra primeiro</option>
@@ -107,6 +112,47 @@ const fmtP = new Intl.DateTimeFormat("pt-BR",{timeZone:"America/Sao_Paulo",day:"
 function fmtData(d){ const p={}; fmtP.formatToParts(d).forEach(x=>p[x.type]=x.value); return p.day+"/"+p.month+"/"+p.year+" "+(p.hour==="24"?"00":p.hour)+":"+p.minute; }
 const dt = s => s ? new Date(s.slice(0,19)+"-03:00") : null;           /* horários da API são de Brasília */
 const brl = v => (v==null||v<=1) ? "valor não informado" : new Intl.NumberFormat("pt-BR",{style:"currency",currency:"BRL"}).format(v);
+
+/* ---------- Google Agenda: abre o evento já preenchido (sem login nem conexão) ---------- */
+const fmtC = new Intl.DateTimeFormat("en-CA",{timeZone:"America/Sao_Paulo",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false});
+function dtAgenda(d){ const p={}; fmtC.formatToParts(d).forEach(x=>p[x.type]=x.value); return p.year+p.month+p.day+"T"+(p.hour==="24"?"00":p.hour)+p.minute+p.second; }
+function linkAgenda(it){
+  if(!it._f || it._f.getTime()<=Date.now()) return null;
+  const ini = new Date(it._f.getTime()-30*60000);
+  const titulo = "Prazo licitação: "+(it.objeto||"sem descrição").slice(0,70).trim()+(it.mun?" – "+it.mun:"");
+  const detalhes = [
+    it.orgao||it.unidade, it.mun, brl(it.valor)+(it.num?(" · nº "+it.num):""),
+    "Prazo para propostas: "+fmtData(it._f), "", (it.url||it.link||""), "",
+    "Dica: toque em 'Adicionar notificação' e escolha 1 dia antes para não esquecer."
+  ].filter(x=>x!==null&&x!==undefined).join("\n");
+  return "https://calendar.google.com/calendar/render?action=TEMPLATE"
+    +"&text="+encodeURIComponent(titulo)
+    +"&dates="+dtAgenda(ini)+"/"+dtAgenda(it._f)
+    +"&details="+encodeURIComponent(detalhes)
+    +"&ctz="+encodeURIComponent("America/Sao_Paulo");
+}
+
+/* ---------- outras fontes (atalhos) ---------- */
+const FONTES = [
+  {nome:"PNCP – Portal Nacional de Contratações Públicas", app:true, url:"https://pncp.gov.br/app/editais",
+   desc:"Já alimenta esta lista. Reúne o que prefeituras, estado e União publicam, inclusive de sistemas como Compras.gov.br e Portal de Compras Públicas (aparecem no cartão como \"via ...\")."},
+  {nome:"Compras.gov.br (federal)", app:true, url:"https://www.gov.br/compras/pt-br",
+   desc:"O que esse sistema envia ao PNCP já aparece aqui. Para participar do pregão, é preciso cadastro no próprio sistema."},
+  {nome:"Portal de Compras Públicas", app:true, url:"https://www.portaldecompraspublicas.com.br",
+   desc:"Muitas prefeituras usam. O que é enviado ao PNCP já aparece aqui; para dar lances, use o portal."},
+  {nome:"Portal de Compras do Governo do ES", app:false, url:"https://compras.es.gov.br",
+   desc:"Compras do Governo do Estado (cadastro de fornecedores e consultas de licitações). Confira aqui também."},
+  {nome:"SEST SENAT – e-Compras", app:false, url:"https://www.sestsenat.org.br/e-compras",
+   desc:"Editais do SEST SENAT. Usa regulamento próprio e publica no próprio site."},
+  {nome:"SENAC ES – Licitações", app:false, url:"https://es.senac.br/licitacoes",
+   desc:"Editais do Senac no Espírito Santo."},
+  {nome:"FINDES / SENAI / SESI – Portal de Compras", app:false, url:"https://portaldecompras.findes.org.br/portal/Mural.aspx",
+   desc:"Compras da FINDES, SENAI-ES e SESI-ES. Abre sem login; precisa de JavaScript ligado no navegador."},
+  {nome:"Diário Oficial dos Municípios do ES (AMUNES)", app:false, url:"https://www.diariomunicipal.es.gov.br",
+   desc:"Avisos de licitação de prefeituras que publicam ali. Use a busca do site com palavras como \"manutenção\" ou \"elétrico\"."},
+  {nome:"Diário Oficial do Estado do ES (DIO/ES)", app:false, url:"https://dio.es.gov.br",
+   desc:"Caderno de Licitações do Governo do Estado."}
+];
 
 function prep(it){
   if(it._p) return it;
@@ -169,6 +215,7 @@ function cartao(it){
   const onde = [it.mun, ESFERA[it.esfera]].filter(Boolean).join(" · ");
   const wa = "https://wa.me/?text="+encodeURIComponent(
     (it.objeto||"").slice(0,200)+"\n"+it.orgao+" – "+it.mun+"\n"+(it._f?("Encerra: "+fmtData(it._f)+"\n"):"")+(it.url||it.link||""));
+  const agenda = linkAgenda(it);
   const c = h("article",{class:"card "+p.cls},
     topo, obj,
     longo && h("button",{class:"mais",text:"ver tudo",onclick:ev=>{ const aberto=obj.classList.toggle("cort"); ev.target.textContent=aberto?"ver tudo":"ver menos"; }}),
@@ -180,6 +227,7 @@ function cartao(it){
     h("div",{class:"btns"},
       it.url && h("a",{class:"btn",href:it.url,target:"_blank",rel:"noopener",text:"Abrir no PNCP"}),
       it.link && /^https?:\/\//i.test(it.link) && h("a",{class:"btn",href:it.link,target:"_blank",rel:"noopener",text:"Sistema de origem"}),
+      agenda && h("a",{class:"btn",href:agenda,target:"_blank",rel:"noopener",text:"📅 Agenda"}),
       h("button",{class:"btn"+(salva?" on":""),text:salva?"★ Salva":"☆ Salvar",onclick:()=>{
         if(salvas[it.id]) delete salvas[it.id]; else { const cp=Object.assign({},it); delete cp._b; delete cp._p; delete cp._f; delete cp._pub; delete cp._v; salvas[it.id]=cp; }
         gravarLS("lic_salvas", salvas); desenhar(); }}),
@@ -191,13 +239,23 @@ function cartao(it){
 const $ = id => document.getElementById(id);
 function desenharAbas(){
   const rel = itens.filter(i=>i.ramos && i.ramos.length).length;
-  const def = [["rel","Relevantes ("+rel+")"],["todas","Todas ("+itens.length+")"],["sal","Salvas ("+Object.keys(salvas).length+")"]];
+  const def = [["rel","Relevantes",rel],["todas","Todas",itens.length],["sal","Salvas",Object.keys(salvas).length],["fon","Fontes",FONTES.length]];
   const box = $("abas"); box.replaceChildren();
-  def.forEach(([k,t])=>box.append(h("button",{role:"tab","aria-selected":String(est.aba===k),text:t,onclick:()=>{est.aba=k;est.n=POR_PAGINA;desenhar();window.scrollTo(0,0);}})));
+  def.forEach(([k,t,n])=>box.append(h("button",{role:"tab","aria-selected":String(est.aba===k),onclick:()=>{est.aba=k;est.n=POR_PAGINA;desenhar();window.scrollTo(0,0);}},
+    h("span",{text:t}), h("small",{text:String(n)}))));
+}
+function desenharFontes(){
+  const lista = $("lista");
+  lista.append(h("p",{class:"intro",text:"Atalhos para outros portais. Os marcados \"No app\" já alimentam a lista; os de \"Consulta manual\" você abre direto no site e procura por manutenção, elétrico, transformador..."}));
+  FONTES.forEach(f=>lista.append(h("article",{class:"card fonte"},
+    h("div",{class:"topo"}, h("span",{class:"tag"+(f.app?" ok":""),text:f.app?"No app":"Consulta manual"})),
+    h("p",{class:"obj",text:f.nome}),
+    h("div",{class:"meta",text:f.desc}),
+    h("div",{class:"btns"}, h("a",{class:"btn",href:f.url,target:"_blank",rel:"noopener",text:"Abrir portal"})))));
 }
 function desenharChips(){
   const box = $("chips"); box.replaceChildren();
-  if(est.aba==="sal"){ box.hidden=true; return; }
+  if(est.aba==="sal" || est.aba==="fon"){ box.hidden=true; return; }
   box.hidden=false;
   const mk=(t,on,fn)=>h("button",{class:"chip","aria-pressed":String(on),text:t,onclick:fn});
   box.append(mk("Encerra em 7 dias",est.prazo7,()=>{est.prazo7=!est.prazo7;est.n=POR_PAGINA;desenhar();}));
@@ -209,6 +267,9 @@ function desenharChips(){
 }
 function desenhar(){
   desenharAbas(); desenharChips();
+  const fon = est.aba==="fon";
+  $("busca").hidden = fon; $("barra").hidden = fon;
+  if(fon){ $("lista").replaceChildren(); desenharFontes(); $("mais").hidden = true; return; }
   const L = filtrar();
   $("cont").textContent = L.length+" resultado"+(L.length===1?"":"s");
   const lista = $("lista"); lista.replaceChildren();
