@@ -294,7 +294,15 @@ function statusFonte(f){
   if(!f.chave) return null;
   if(!st) return h("div",{class:"stat",text:"Ainda sem leitura registrada (aparece depois da próxima atualização)."});
   const quando = st.em ? " · lido em "+fmtData(dt(st.em)) : "";
-  if(st.ok) return h("div",{class:"stat",text:"✔ "+(st.n||0)+((st.n||0)===1?" aberta":" abertas")+" no app"+quando});
+  if(st.ok){
+    let det = "";
+    if(st.lidas!=null){
+      det = " · "+st.lidas+" lidas no painel";
+      if(st.fora_do_es) det += ", "+st.fora_do_es+" de outros estados";
+      if(st.encerradas) det += ", "+st.encerradas+" já encerradas";
+    }
+    return h("div",{class:"stat",text:"✔ "+(st.n||0)+((st.n||0)===1?" aberta":" abertas")+" no app"+det+quando});
+  }
   return h("div",{class:"stat erro",text:"⚠ Não consegui ler agora: "+(st.aviso||"erro")+quando});
 }
 function desenharFontes(){

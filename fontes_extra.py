@@ -15,6 +15,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -154,7 +155,7 @@ def _papel_colunas(cab, ncol):
     achados = {}
     regras = [("codigo", r"^(c[oó]d|code)"), ("processo", r"process"), ("unidade", r"unid|unit"),
               ("objeto", r"objet|object"), ("modalidade", r"modal|mode"),
-              ("fim", r"\b(fim|t[eé]rmino|end|encerr)"), ("inicio", r"in[ií]cio|start|abertura")]
+              ("fim", r"\b(fim|final|t[eé]rmino|end|encerr|limite|prazo|fechamento)"), ("inicio", r"in[ií]cio|start|abertura")]
     for i, t in enumerate([_norm(c) for c in cab][:ncol]):
         for papel, rx in regras:
             if papel not in achados and re.search(rx, t):
@@ -163,13 +164,53 @@ def _papel_colunas(cab, ncol):
     return achados if len(achados) >= 5 else papeis
 
 
+def _todas_tabelas(page):
+    """Tabelas da página e de quadros (iframes) dentro dela."""
+    tabelas = []
+    for fr in page.frames:
+        try:
+            tabelas += fr.evaluate(_JS_TABELAS)
+        except Exception:                                              # noqa: BLE001
+            pass
+    return tabelas
+
+
+def _esperar_tabela(page, limite_s=45):
+    fim = time.time() + limite_s
+    while time.time() < fim:
+        for fr in page.frames:
+            try:
+                if fr.evaluate(_JS_PRONTO):
+                    return True
+            except Exception:                                          # noqa: BLE001
+                pass
+        page.wait_for_timeout(1000)
+    return False
+
+
+def _colunas_de_data(linhas, ncol):
+    """Colunas cujas células começam com uma data (independe do idioma e do nome da coluna)."""
+    cols = []
+    for i in range(ncol):
+        vals = [l[i] for l in linhas if i < len(l) and l[i].strip()]
+        if vals and sum(1 for v in vals if re.match(r"\s*\d{1,2}/\d{1,2}/\d{4}", v)) >= 0.6 * len(vals):
+            cols.append(i)
+    return cols
+
+
 def _extrair_linhas(page):
-    tabelas = page.evaluate(_JS_TABELAS)
+    tabelas = _todas_tabelas(page)
     melhor = max(tabelas, key=lambda t: sum(1 for l in t["linhas"] if len(l) >= 6), default=None)
     if not melhor:
         return []
     ncol = max((len(l) for l in melhor["linhas"]), default=0)
     col = _papel_colunas(melhor["cab"], ncol)
+    datas = _colunas_de_data([l for l in melhor["linhas"] if len(l) >= 6], ncol)
+    if len(datas) >= 2:                      # a primeira data é o início e a última é o encerramento
+        col["inicio"], col["fim"] = datas[0], datas[-1]
+    elif len(datas) == 1:
+        col["fim"] = datas[0]
+        col.setdefault("inicio", datas[0])
     saida = []
     for l in melhor["linhas"]:
         if len(l) < 6:
@@ -190,13 +231,11 @@ def ler_paradigma(chave, log=print):
     with sync_playwright() as p:
         navegador = _abrir_navegador(p, log)
         try:
-            ctx = navegador.new_context(locale="pt-BR", timezone_id="America/Sao_Paulo", user_agent=USER_AGENT,
+            ctx = navegador.new_context(locale="en-US", timezone_id="America/Sao_Paulo", user_agent=USER_AGENT,
                                         viewport={"width": 1366, "height": 900})
             page = ctx.new_page()
             page.goto(cfg["url"], wait_until="domcontentloaded", timeout=60000)
-            try:
-                page.wait_for_function(_JS_PRONTO, timeout=45000)
-            except Exception:                                          # noqa: BLE001
+            if not _esperar_tabela(page):
                 corpo = _norm(page.inner_text("body"))
                 if re.search(r"no records|nenhum registro|sem registros", corpo):
                     status.update(ok=True, n=0, aviso="o portal não mostra processos abertos agora")
@@ -221,10 +260,17 @@ def ler_paradigma(chave, log=print):
             navegador.close()
 
     itens = []
-    descartados_uf = 0
+    descartados_uf = sem_data = encerradas = sem_objeto = 0
     for l in linhas:
         fecha = parse_data_hora(l["fim"])
-        if not l["objeto"] or not fecha or not _futuro(fecha):
+        if not fecha:
+            sem_data += 1
+            continue
+        if not _futuro(fecha):
+            encerradas += 1
+            continue
+        if not l["objeto"]:
+            sem_objeto += 1
             continue
         ufs = _ufs_no_texto(l["unidade"] + " " + l["objeto"])
         uf = "?"
@@ -247,8 +293,13 @@ def ler_paradigma(chave, log=print):
             "pub": parse_data_hora(l["inicio"], (0, 0)) or fecha, "origem": cfg["nome"], "link": "",
             "url": cfg["url"], "fonte": cfg["nome"], "uf": uf,
         })
-    status.update(ok=True, n=len(itens), lidas=len(linhas), fora_do_es=descartados_uf)
-    if not linhas:
+    status.update(ok=True, n=len(itens), lidas=len(linhas), fora_do_es=descartados_uf, encerradas=encerradas)
+    if sem_data:
+        status["sem_data"] = sem_data
+    if linhas and sem_data >= max(1, len(linhas) // 2):
+        status["ok"] = False
+        status["aviso"] = "não consegui entender as datas do painel (%d de %d linhas)" % (sem_data, len(linhas))
+    elif not linhas:
         status["aviso"] = "tabela vazia"
     return itens, status
 
