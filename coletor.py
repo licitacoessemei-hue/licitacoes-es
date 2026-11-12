@@ -18,6 +18,7 @@ Uso:   python coletor.py
        python coletor.py --config config.json --saida docs --sem-notificar
 """
 import argparse
+import http.client
 import json
 import os
 import re
@@ -85,7 +86,12 @@ def parse_data(texto):
 
 # ----------------------------------------------------------------------------- acesso à API
 
-def http_get_json(url, tentativas=4, espera=3):
+ESPERA = float(os.environ.get("COLETOR_ESPERA", "3"))                 # segundos entre tentativas (dobra a cada vez)
+PAUSA_REPETICAO = float(os.environ.get("COLETOR_PAUSA_REPETICAO", "20"))
+
+
+def http_get_json(url, tentativas=5, espera=None):
+    espera = ESPERA if espera is None else espera
     ultimo_erro = None
     for i in range(tentativas):
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
@@ -105,7 +111,7 @@ def http_get_json(url, tentativas=4, espera=3):
                     "HTTP %d: o PNCP recusou o acesso. Se estiver rodando fora do Brasil/em nuvem, "
                     "tente rodar a partir de um computador no Brasil." % e.code)
             ultimo_erro = "HTTP %d" % e.code
-        except (urllib.error.URLError, TimeoutError, ConnectionError, json.JSONDecodeError) as e:
+        except (OSError, http.client.HTTPException, ValueError) as e:   # rede, leitura cortada, JSON inválido
             ultimo_erro = repr(e)
         if i < tentativas - 1:
             time.sleep(espera * (2 ** i))
@@ -131,22 +137,51 @@ def buscar_abertas(uf, dias_a_frente, log=print):
     if tamanho is None:
         raise FalhaDeAcesso("A API recusou todos os tamanhos de página testados.")
 
-    registros, pagina = {}, 1
-    while True:
-        for r in (resposta or {}).get("data") or []:
+    registros, faltaram = {}, []
+
+    def guardar(resp):
+        for r in (resp or {}).get("data") or []:
             chave = r.get("numeroControlePNCP")
             if chave:
                 registros[chave] = r
-        total_paginas = (resposta or {}).get("totalPaginas") or 0
-        log("  página %d/%d (%d registros até agora)" % (pagina, max(total_paginas, 1), len(registros)))
-        if pagina >= total_paginas or pagina >= 400:
-            break
-        pagina += 1
-        resposta = pedir(pagina, tamanho)
-        if resposta is None:
-            raise FalhaDeAcesso("Resposta vazia inesperada na página %d; abortando para não gravar dados incompletos." % pagina)
+
+    total_paginas = (resposta or {}).get("totalPaginas") or 0
+    guardar(resposta)
+    log("  página 1/%d (%d registros até agora)" % (max(total_paginas, 1), len(registros)))
+    for pagina in range(2, min(total_paginas, 400) + 1):
+        try:
+            resp = pedir(pagina, tamanho)
+        except FalhaDeAcesso as e:
+            if "recusou o acesso" in str(e):
+                raise
+            resp = None
+        if resp is None:
+            log("  página %d/%d: o PNCP não respondeu (tento de novo no final)" % (pagina, total_paginas))
+            faltaram.append(pagina)
+        else:
+            guardar(resp)
+            log("  página %d/%d (%d registros até agora)" % (pagina, total_paginas, len(registros)))
         time.sleep(0.3)
+    if faltaram:                                       # segunda chance, depois de uma pausa
+        log("  repetindo %d página(s) que falharam..." % len(faltaram))
+        time.sleep(PAUSA_REPETICAO)
+        for pagina in list(faltaram):
+            try:
+                resp = pedir(pagina, tamanho)
+            except FalhaDeAcesso:
+                resp = None
+            if resp is not None:
+                guardar(resp)
+                faltaram.remove(pagina)
+                log("  página %d/%d recuperada (%d registros até agora)" % (pagina, total_paginas, len(registros)))
+            time.sleep(0.5)
+    buscar_abertas.faltaram = faltaram
+    buscar_abertas.total_paginas = total_paginas
     return list(registros.values())
+
+
+buscar_abertas.faltaram = []
+buscar_abertas.total_paginas = 0
 
 
 # ----------------------------------------------------------------------------- classificação
@@ -415,6 +450,10 @@ def main():
     caminho_json = os.path.join(args.saida, "dados.json")
     previo = carregar_previo(caminho_json)
 
+    try:
+        sys.stdout.reconfigure(line_buffering=True)      # mensagens aparecem na ordem certa no log do GitHub
+    except (AttributeError, ValueError):
+        pass
     print("Buscando licitações abertas (%s) no PNCP..." % cfg["uf"])
     try:
         registros = buscar_abertas(cfg["uf"], cfg.get("dias_a_frente", 365))
@@ -428,6 +467,17 @@ def main():
     itens, descartadas = montar_itens(registros, cfg, previo)
     if not args.sem_detalhes:
         enriquecer_pncp(itens, previo)
+    aviso_pncp = None
+    faltaram = getattr(buscar_abertas, "faltaram", [])
+    if faltaram:                                         # não perde o que estava só nas páginas que falharam
+        ids = {i["id"] for i in itens}
+        agora_ = agora_brt()
+        mantidos = [i for i in (previo or {}).values()
+                    if not i.get("fonte") and i["id"] not in ids and parse_data(i.get("fecha")) and parse_data(i.get("fecha")) >= agora_]
+        itens += mantidos
+        aviso_pncp = ("o PNCP não respondeu em %d de %d página(s); %d licitações vieram da leitura anterior"
+                      % (len(faltaram), getattr(buscar_abertas, "total_paginas", 0), len(mantidos)))
+        print("AVISO: " + aviso_pncp)
     n_pncp = len(itens)
 
     fontes_status = {}
@@ -437,6 +487,8 @@ def main():
         extras += manter_itens_da_ultima_leitura(previo, fontes_status, extras)
         itens += extras
     fontes_status["PNCP"] = {"nome": "PNCP", "ok": True, "n": n_pncp, "em": agora_brt().isoformat(timespec="seconds")}
+    if aviso_pncp:
+        fontes_status["PNCP"]["aviso"] = aviso_pncp
 
     relevantes = [i for i in itens if i["ramos"]]
     dados = {
