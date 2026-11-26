@@ -46,18 +46,46 @@ Abra `config.json` no GitHub (lápis de editar), altere e faça *Commit*. A pró
 - Acentos e maiúsculas não importam, e "transformador" também acha "transformadores". Termos de até 4 letras valem só como palavra inteira ("led", "fio").
 - Em cada cartão aparece *"Apareceu por: ..."* (ou *"Apareceu pelos itens da licitação: ..."*) para você ver por que ele foi selecionado e ajustar a lista.
 
+## Aba Busca (todas as abertas no ES)
+
+- Lista **todas** as licitações abertas no ES que o app leu (PNCP e portais), de qualquer assunto, e deixa buscar por palavra-chave.
+- A busca ignora maiúsculas e acentos e acha pelo **começo da palavra** ("eletric" acha elétrica; "elevador" acha elevadores). Palavras de até 3 letras valem só inteiras ("ar" não acha "para").
+- Com duas palavras ou mais, escolha **Todas as palavras** (todas precisam aparecer) ou **Qualquer palavra**.
+- Filtro por **município**, "Encerra em 7 dias", "Só novas" e "Outros portais" funcionam junto. A palavra aparece destacada no cartão.
+- A busca olha objeto, órgão, cidade, número e os itens da licitação quando já foram lidos. As últimas buscas ficam em **Recentes**.
+
+## Selecionar licitações e enviar por WhatsApp para clientes
+
+1. Em qualquer aba de lista (Relevantes, Todas, Busca ou Salvas), toque em **Selecionar para enviar**. Cada cartão ganha um botão **Selecionar**.
+2. Para mandar um nicho inteiro: toque no filtro do ramo (ou faça uma busca) e depois em **Marcar as N da lista**. A seleção continua se você trocar de aba, então dá para juntar licitações de filtros diferentes.
+3. Toque em **Enviar no WhatsApp**. Abre uma mensagem pronta (ramo, objeto, órgão, cidade, prazo e link de cada licitação, em ordem de prazo). Você pode editar o texto, por exemplo para incluir uma saudação.
+4. Toque em **Abrir no WhatsApp**, escolha o cliente (ou grupo) e envie. Para mandar a outro cliente, volte ao app e toque no botão de novo.
+5. Se a lista for grande, a mensagem é dividida em partes (o WhatsApp limita o tamanho do link); envie uma de cada vez, na ordem. Há também **Copiar texto** e **Compartilhar**.
+6. Toque em **Limpar** para recomeçar com outro nicho, ou desligue o botão Selecionar.
+
+O app não manda mensagens sozinho: quem envia é você, pelo seu WhatsApp. A lista de clientes não fica guardada no app.
+
 ## Abas Relevantes e Todas
 
 - **Relevantes**: licitações que atingiram a pontuação mínima em algum dos seus ramos.
-- **Todas**: o seu nicho completo = Relevantes + as marcadas "Possível". Para ver também licitações de outros assuntos, toque em **Incluir outros nichos**.
+- **Todas**: tudo o que está aberto no ES e que o app leu, de qualquer assunto. Para ver só o seu nicho (Relevantes + as marcadas "Possível"), toque em **Só o meu nicho**, ou escolha um ramo nos filtros.
 - Todo cartão do PNCP tem **Baixar edital** e **Itens e anexos**. Quando o app não trouxe esses dados prontos, ele tenta buscá-los no PNCP na hora do toque.
 - **Baixar edital no app instalado:** o celular pode travar ao abrir PDF dentro do app. Por isso, no app instalado o botão abre um painel com **Abrir no navegador**, **Copiar link** e **Compartilhar**.
+
+## Outros portais que alimentam a lista
+
+Além do PNCP, o robô lê (sem login) e coloca na mesma lista, com a etiqueta do portal e o filtro **Outros portais**:
+
+- **Portal de Compras Públicas** (portaldecompraspublicas.com.br): processos do ES com propostas abertas ou prestes a abrir. O portal mostra o objeto cortado em cerca de 250 letras, então o app classifica só pelo que aparece; abra o processo no portal para ler inteiro. Quando o mesmo processo também está no PNCP, aparece só a versão do PNCP (que tem edital e itens).
+- **SEST SENAT**, **FINDES / SENAI / SESI** e **SENAC ES**.
+
+A aba **Fontes** mostra, para cada portal, quantas licitações entraram, quando foi a última leitura e o motivo se alguma leitura falhou (o app continua mostrando a última leitura que deu certo). Para desligar um portal, acrescente em `config.json`, por exemplo: `"fontes_extra": {"pcp": false}` (as chaves são `pcp`, `sestsenat`, `findes`, `senac_es`).
 
 ## O que o app cobre e o que não cobre
 
 - **Cobre** o que é publicado no PNCP, que é obrigatório para a Lei 14.133/2021. No teste apareceram publicações vindas do Compras.gov.br, Licitanet e Portal de Compras Públicas.
-- **Não cobre:** Sistema S, estatais e concessionárias com regulamento próprio, e municípios com até 20 mil habitantes que ainda não integraram ao PNCP (prazo até 1º/04/2027).
-- A busca olha o **objeto e as informações complementares** do edital e, quando o objeto é genérico ("aquisição de materiais"), também os **itens** da licitação (lidos no PNCP, no máximo 150 novas por atualização). O que ainda escapar aparece em *Todas > Incluir outros nichos* com a busca.
+- **Não cobre (só pelo PNCP):** estatais e concessionárias com regulamento próprio, e municípios com até 20 mil habitantes que ainda não integraram ao PNCP (prazo até 1º/04/2027). Parte disso é coberta pelos outros portais acima.
+- A busca olha o **objeto e as informações complementares** do edital e, quando o objeto é genérico ("aquisição de materiais"), também os **itens** da licitação (lidos no PNCP, no máximo 150 novas por atualização). O que ainda escapar aparece na aba *Todas* (ou na aba *Busca*).
 - Valor "não informado" aparece quando o órgão informa 0, 1 real ou sigilo.
 - O app ajuda a **achar** oportunidades. Prazos, exigências e habilitação devem ser conferidos sempre no edital.
 

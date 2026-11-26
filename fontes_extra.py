@@ -6,6 +6,7 @@ Fontes além do PNCP, lidas das páginas públicas (sem login e sem CAPTCHA):
   * SEST SENAT  (compras.sestsenat.org.br)  - portal "Paradigma", precisa de navegador (JavaScript)
   * FINDES / SENAI / SESI (portaldecompras.findes.org.br) - mesmo portal "Paradigma"
   * SENAC ES    (es.senac.br/licitacoes)    - página HTML simples
+  * Portal de Compras Públicas (portaldecompraspublicas.com.br) - lista de processos do ES, precisa de navegador
 
 Cada leitor devolve (itens, status). Se um portal mudar ou ficar fora do ar, só ele falha:
 o resto do aplicativo continua funcionando e o motivo aparece na aba "Fontes".
@@ -37,6 +38,9 @@ FONTES = {
                "url": "https://portaldecompras.findes.org.br/portal/Mural.aspx", "filtrar_uf": False},
     "senac_es": {"nome": "SENAC ES", "tipo": "senac",
                  "url": "https://es.senac.br/licitacoes"},
+    # 100132 é o número que o próprio portal usa para o Espírito Santo no filtro "UF"
+    "pcp": {"nome": "Portal de Compras Públicas", "tipo": "pcp",
+            "url": "https://www.portaldecompraspublicas.com.br/processos?pagina=1&uf=100132"},
 }
 
 
@@ -487,18 +491,281 @@ def ler_senac(chave="senac_es", log=print):
     return itens, status
 
 
+# ----------------------------------------------------------------------------- Portal de Compras Públicas (PCP)
+
+MUNICIPIOS_ES = [
+    "Afonso Cláudio", "Água Doce do Norte", "Águia Branca", "Alegre", "Alfredo Chaves", "Alto Rio Novo", "Anchieta",
+    "Apiacá", "Aracruz", "Atilio Vivacqua", "Baixo Guandu", "Barra de São Francisco", "Boa Esperança",
+    "Bom Jesus do Norte", "Brejetuba", "Cachoeiro de Itapemirim", "Cariacica", "Castelo", "Colatina",
+    "Conceição da Barra", "Conceição do Castelo", "Divino de São Lourenço", "Domingos Martins", "Dores do Rio Preto",
+    "Ecoporanga", "Fundão", "Governador Lindenberg", "Guaçuí", "Guarapari", "Ibatiba", "Ibiraçu", "Ibitirama",
+    "Iconha", "Irupi", "Itaguaçu", "Itapemirim", "Itarana", "Iúna", "Jaguaré", "Jerônimo Monteiro", "João Neiva",
+    "Laranja da Terra", "Linhares", "Mantenópolis", "Marataízes", "Marechal Floriano", "Marilândia", "Mimoso do Sul",
+    "Montanha", "Mucurici", "Muniz Freire", "Muqui", "Nova Venécia", "Pancas", "Pedro Canário", "Pinheiros", "Piúma",
+    "Ponto Belo", "Presidente Kennedy", "Rio Bananal", "Rio Novo do Sul", "Santa Leopoldina", "Santa Maria de Jetibá",
+    "Santa Teresa", "São Domingos do Norte", "São Gabriel da Palha", "São José do Calçado", "São Mateus",
+    "São Roque do Canaã", "Serra", "Sooretama", "Vargem Alta", "Venda Nova do Imigrante", "Viana", "Vila Pavão",
+    "Vila Valério", "Vila Velha", "Vitória",
+]
+_MUN_ES = sorted(((_norm(m), m) for m in MUNICIPIOS_ES), key=lambda x: -len(x[0]))
+_RX_PCP_STATUS = re.compile(r"^(recebendo|aguardando|cancelad|suspens|encerrad|em (disputa|julgamento|analise|andamento|recurso|fase)"
+                            r"|homologad|deserto|fracassad|revogad|anulad|finalizad|adjudicad|concluid|aberto|publicad)")
+_RX_PCP_FORA = re.compile(r"cancel|revog|anul|deserto|fracass|encerrad|homolog|adjudic|finaliz|conclu")
+_CHIPS_PCP = {"exclusivo me", "exclusivo me/epp", "acessar processo", "ampla participacao", "cota reservada"}
+MAX_PAGINAS_PCP = 45                                   # 45 páginas x 12 = 540 processos (o ES tem ~250 abertos)
+ESPERA_PAGINA_PCP = float(os.environ.get("COLETOR_ESPERA_PCP", "50"))   # segundos esperando os cartões de uma página
+
+_JS_CARTOES = """() => [...document.querySelectorAll('article')].map(a => {
+    const lk = a.closest('a[href]') || a.querySelector('a[href*="/processos/"]');
+    return {href: lk ? (lk.getAttribute('href') || '') : '', texto: (a.innerText || '').trim()};
+})"""
+
+
+def _municipio_pcp(comprador):
+    """O comprador termina com o município ('Prefeitura Municipal de Guarapari', 'Fundo Municipal de Saúde de Ibatiba',
+    'Secretaria Municipal de Obras de Serra - SEOB'). Só aceito quando é um dos 78 municípios do ES."""
+    base = _norm(re.split(r"\s+-\s+", comprador or "")[0])
+    for nn, nome in _MUN_ES:
+        if re.search(r"(?:^|\s)" + re.escape(nn) + r"$", base):
+            return nome
+    return ""
+
+
+def _esfera_pcp(comprador):
+    n = _norm(comprador)
+    if re.search(r"\b(sesi|senai|senac|sest|senat|sebrae|sesc|findes)\b|sistema s", n):
+        return "S"
+    if re.search(r"federal|ministerio|exercito|marinha|aeronautica|ufes|ifes", n):
+        return "F"
+    if re.search(r"estadual|estado do espirito santo|governo do estado|secretaria de estado|detran|idaf|iema|cesan|bandes|"
+                 r"policia militar|corpo de bombeiros|defensoria|tribunal de justica|assembleia legislativa", n):
+        return "E"
+    if re.search(r"prefeitura|municipal|municipio|camara|consorcio|samae|saae|semae|autarquia", n):
+        return "M"
+    return ""
+
+
+def interpretar_cartao_pcp(texto, href=""):
+    """Um cartão da lista do PCP, lido como texto puro (não depende do desenho do HTML):
+       Nº do Processo: 059/2026 / <situação> / <objeto, cortado em ~250 letras> / Exclusivo ME /
+       Abertura das Propostas: 03/12/2026 às 12:00 / Modalidade: ... / Comprador: ... / Acessar processo"""
+    linhas = [l for l in (_limpar(x) for x in (texto or "").replace("\r", "").split("\n")) if l]
+    d = {"numero": "", "status": "", "objeto": "", "abertura": "", "modalidade": "", "comprador": "", "href": href or ""}
+    resto = []
+    rotulos = (("numero", r"^N[º°o]\.?\s*do\s+Processo\s*:\s*(.*)$"), ("abertura", r"^Abertura\s+das\s+Propostas\s*:\s*(.*)$"),
+               ("modalidade", r"^Modalidade\s*:\s*(.*)$"), ("comprador", r"^Comprador\s*:\s*(.*)$"))
+    for l in linhas:
+        for campo, rx in rotulos:
+            m = re.match(rx, l, re.I)
+            if m:
+                d[campo] = m.group(1).strip()
+                break
+        else:
+            resto.append(l)
+    for l in resto:
+        if len(l) < 80 and _RX_PCP_STATUS.match(_norm(l)):
+            d["status"] = l
+            break
+    cand = [l for l in resto if l != d["status"] and _norm(l) not in _CHIPS_PCP]
+    longos = [l for l in cand if len(l) >= 40]
+    d["objeto"] = _limpar(" ".join(longos) if longos else (max(cand, key=len) if cand else ""))
+    return d if (d["numero"] or d["objeto"]) else None
+
+
+def _num_ano(s):
+    m = re.search(r"(\d+)\s*/\s*(\d{4})", s or "")
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def _palavras(t):
+    return set(re.findall(r"[a-z0-9]{4,}", _norm(t)))
+
+
+def repetida_no_pncp(it, pncp):
+    """True se o processo do PCP já está na lista como licitação do PNCP (o PCP envia boa parte ao PNCP).
+    Só considera repetida quando o número/ano, o município (ou o órgão) E o texto do objeto batem: numeração igual em
+    modalidades diferentes é comum, e esconder uma licitação de verdade seria pior do que mostrar uma repetida."""
+    k = _num_ano(it.get("num"))
+    pa = _palavras(it.get("objeto"))
+    if not k or not pa:
+        return False
+    mun, org = _norm(it.get("mun")), _norm(it.get("orgao"))
+    for o in pncp:
+        if o.get("fonte") or _num_ano(o.get("num")) != k:
+            continue
+        alvo = _norm(" ".join([o.get("orgao") or "", o.get("unidade") or "", o.get("mun") or ""]))
+        mesmo_lugar = bool(mun and re.search(r"(?:^|\s)" + re.escape(mun) + r"(?:$|\s)", alvo)) or bool(not mun and org and org in alvo)
+        if mesmo_lugar and len(pa & _palavras(o.get("objeto"))) / len(pa) >= 0.6:
+            return True
+    return False
+
+
+def _url_pcp(base, n):
+    u = urllib.parse.urlsplit(base)
+    q = [(k, v) for k, v in urllib.parse.parse_qsl(u.query, keep_blank_values=True) if k != "pagina"]
+    return urllib.parse.urlunsplit((u.scheme, u.netloc, u.path, urllib.parse.urlencode([("pagina", str(n))] + q), ""))
+
+
+def _sem_imagens(route):
+    try:
+        if route.request.resource_type in ("image", "font", "media"):
+            route.abort()
+        else:
+            route.continue_()
+    except Exception:                                                  # noqa: BLE001
+        pass
+
+
+def _ler_pagina_pcp(page, url, limite):
+    """Abre uma página da lista e devolve os cartões. A lista chega depois da página (aparece 'carregando' e
+    '0 Registros' por alguns segundos), então espero os cartões aparecerem; 2 tentativas."""
+    for _ in range(2):
+        espera = int(min(ESPERA_PAGINA_PCP, limite - time.time() - 5) * 1000)
+        if espera < 3000:
+            return []
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=min(60000, espera))
+            page.wait_for_selector("article", timeout=espera)
+            page.wait_for_timeout(400)
+            achados = page.evaluate(_JS_CARTOES)
+            if achados:
+                return achados
+        except Exception:                                              # noqa: BLE001
+            pass
+    return []
+
+
+def ler_pcp(chave="pcp", log=print, prazo_final=None):
+    cfg = FONTES[chave]
+    status = {"nome": cfg["nome"], "url": cfg["url"]}
+    if not garantir_playwright(log):
+        status.update(ok=False, aviso="navegador automático indisponível nesta execução")
+        return [], status
+    t0 = time.time()
+    limite = t0 + float(os.environ.get("COLETOR_ORCAMENTO_PCP", "420"))
+    if prazo_final:
+        limite = min(limite, prazo_final)
+    if limite - t0 < 60:
+        status.update(ok=False, aviso="sem tempo nesta execução (as outras fontes já usaram o limite)")
+        return [], status
+    from playwright.sync_api import sync_playwright
+    cartoes, vistos, paginas, falhas, parou = [], set(), 0, [], ""
+    with sync_playwright() as p:
+        navegador = _abrir_navegador(p, log)
+        try:
+            ctx = navegador.new_context(locale="pt-BR", timezone_id="America/Sao_Paulo", user_agent=USER_AGENT_NAVEGADOR,
+                                        viewport={"width": 1280, "height": 900})
+            ctx.route("**/*", _sem_imagens)
+            page = ctx.new_page()
+            for n in range(1, MAX_PAGINAS_PCP + 1):
+                if time.time() > limite - 20:
+                    parou = "tempo"
+                    break
+                achados = _ler_pagina_pcp(page, _url_pcp(cfg["url"], n), limite)
+                if not achados:
+                    falhas.append(n)
+                    if len(falhas) >= 2 and (not paginas or falhas[-2] == n - 1):
+                        parou = "falha"                                # duas páginas seguidas sem resposta: desisto
+                        break
+                    continue
+                paginas += 1
+                datas = []
+                for c in achados:
+                    d = interpretar_cartao_pcp(c.get("texto"), c.get("href"))
+                    if not d:
+                        continue
+                    k = d["href"] or (d["numero"], d["comprador"], d["objeto"][:60])
+                    if k in vistos:
+                        continue
+                    vistos.add(k)
+                    cartoes.append(d)
+                    iso = parse_data_hora(d["abertura"], (0, 0))
+                    if iso:
+                        datas.append(iso)
+                if datas and not _futuro(datas[-1]):
+                    parou = "passado"                                  # a lista vai da data mais distante para a mais antiga:
+                    break                                              # se o último cartão da página já passou, o resto também
+        finally:
+            navegador.close()
+
+    itens = []
+    fora_es = sem_data = encerradas = fora_status = sem_objeto = 0
+    for d in cartoes:
+        m = re.match(r"^/processos/([a-z]{2})/([^/]+)/([^/?#]+)", d["href"] or "")
+        if (m.group(1).upper() if m else "ES") != "ES":
+            fora_es += 1
+            continue
+        if _RX_PCP_FORA.search(_norm(d["status"])):
+            fora_status += 1                                           # cancelado, revogado, deserto, encerrado...
+            continue
+        fecha = parse_data_hora(d["abertura"])
+        if not fecha:
+            sem_data += 1
+            continue
+        if not _futuro(fecha):
+            encerradas += 1
+            continue
+        if not d["objeto"]:
+            sem_objeto += 1
+            continue
+        pid = re.search(r"-(\d{4,})$", m.group(3)) if m else None
+        ident = "|".join([d["numero"], d["comprador"], d["objeto"][:80], d["abertura"]])
+        itens.append({
+            "id": "pcp:" + (pid.group(1) if pid else hashlib.md5(ident.encode("utf-8")).hexdigest()[:12]),
+            "objeto": _limpar(re.sub(r"\.\.\.$", "…", d["objeto"]), 1500),
+            "orgao": _limpar(d["comprador"], 140) or cfg["nome"], "unidade": "",
+            "mun": _municipio_pcp(d["comprador"]), "esfera": _esfera_pcp(d["comprador"]),
+            "mod": _limpar(d["modalidade"]), "sit": "Suspenso" if "suspens" in _norm(d["status"]) else "",
+            "valor": None, "srp": "registro de preco" in _norm(d["modalidade"]),
+            "num": _limpar(d["numero"]), "abre": fecha, "fecha": fecha, "pub": fecha, "origem": cfg["nome"], "link": "",
+            "url": urllib.parse.urljoin(cfg["url"], d["href"]) if d["href"] else cfg["url"],
+            "fonte": cfg["nome"], "uf": "ES",
+        })
+    status.update(ok=True, n=len(itens), lidas=len(cartoes), paginas=paginas, segundos=int(time.time() - t0))
+    if fora_es:
+        status["fora_do_es"] = fora_es
+    status["encerradas"] = encerradas + fora_status
+    if sem_data:
+        status["sem_data"] = sem_data
+    if falhas:
+        status["paginas_sem_resposta"] = falhas
+    if not cartoes:
+        status.update(ok=False, aviso="a lista de processos não carregou (o site pode ter mudado ou estava lento)")
+    elif cartoes and sem_data >= max(1, len(cartoes) // 2):
+        status.update(ok=False, aviso="não consegui entender as datas da lista (%d de %d cartões)" % (sem_data, len(cartoes)))
+        if cartoes:
+            status["diag"] = (cartoes[0]["numero"] + " | " + cartoes[0]["abertura"] + " | " + cartoes[0]["status"])[:200]
+    elif parou == "tempo":
+        status.update(parcial=True, aviso="li %d página(s) e parei pelo limite de tempo; o resto vem da leitura anterior" % paginas)
+    elif parou == "falha":
+        status.update(parcial=True, aviso="o portal parou de responder na página %d; o resto vem da leitura anterior" % (falhas[-1]))
+    elif parou != "passado" and paginas >= MAX_PAGINAS_PCP:
+        status["aviso"] = "limite de %d páginas atingido" % MAX_PAGINAS_PCP
+    if sem_objeto:
+        status["sem_objeto"] = sem_objeto
+    return itens, status
+
+
 # ----------------------------------------------------------------------------- orquestração
 
-def coletar_todas(cfg, log=print):
-    """Devolve (itens, {nome: status}). Nunca levanta exceção: cada fonte falha isoladamente."""
+def coletar_todas(cfg, log=print, prazo_final=None):
+    """Devolve (itens, {nome: status}). Nunca levanta exceção: cada fonte falha isoladamente.
+    prazo_final: instante (time.time()) em que o trabalho todo precisa acabar; o PCP, o último, usa o que sobrar."""
     ligadas = cfg.get("fontes_extra") or {}
     itens, status = [], {}
     for chave, f in FONTES.items():
         if ligadas.get(chave, True) is False:
             continue
+        if f["tipo"] == "pcp" and (cfg.get("uf") or "ES").upper() != "ES":
+            continue                                                   # o número da UF no PCP só está configurado para o ES
         log("Lendo %s..." % f["nome"])
         try:
-            lido, st = (ler_paradigma(chave, log) if f["tipo"] == "paradigma" else ler_senac(chave, log))
+            if f["tipo"] == "paradigma":
+                lido, st = ler_paradigma(chave, log)
+            elif f["tipo"] == "pcp":
+                lido, st = ler_pcp(chave, log, prazo_final)
+            else:
+                lido, st = ler_senac(chave, log)
         except Exception as e:                                         # noqa: BLE001
             lido, st = [], {"nome": f["nome"], "url": f["url"], "ok": False, "aviso": "falhou: %s" % str(e).splitlines()[0][:160]}
         st["em"] = datetime.now(BRT).isoformat(timespec="seconds")

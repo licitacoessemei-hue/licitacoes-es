@@ -67,6 +67,30 @@ input[type=search],select{width:100%;min-height:44px;margin-top:10px;padding:10p
 .vazio{margin:40px 20px;text-align:center;color:var(--gr)}
 .rodape{margin:18px 14px;color:var(--gr);font-size:12px}
 #mais{display:block;width:calc(100% - 24px);margin:12px;min-height:48px;border:1.5px solid var(--cz);border-radius:8px;background:#fff;color:var(--tx);font:700 15px system-ui}
+#painel-busca{background:#fff;border-bottom:1px solid var(--bd);padding:0 12px 10px}
+#painel-busca input[type=search]{margin-top:10px}
+#painel-busca select{margin-top:8px;min-height:44px;font-size:15px}
+.modo{display:flex;gap:8px;margin-top:10px}
+.modo .chip{flex:1 1 0;white-space:normal;text-align:center;line-height:1.2}
+.recentes{display:flex;gap:8px;overflow-x:auto;margin-top:8px;padding-bottom:2px}
+.recentes:empty{display:none}
+.rec-t{flex:0 0 auto;align-self:center;color:var(--gr);font-size:13px}
+mark{background:#ffe29a;color:inherit;border-radius:3px;padding:0 1px}
+.selbtn{display:flex;align-items:center;gap:8px;width:100%;min-height:44px;margin:0 0 8px;padding:8px 12px;border:1.5px dashed var(--cz);border-radius:8px;background:#fff;color:var(--tx);font:700 15px system-ui}
+.selbtn.on{background:var(--cz);color:#fff;border-style:solid}
+.card.marcada{box-shadow:0 0 0 3px var(--cz)}
+#barra-sel{position:fixed;left:0;right:0;bottom:0;z-index:20;background:#fff;border-top:2px solid var(--cz);padding:8px 12px calc(8px + env(safe-area-inset-bottom))}
+#barra-sel .lin{display:flex;gap:8px;align-items:center}
+#barra-sel .lin+.lin{margin-top:8px}
+#qtd-sel{flex:1;font-weight:700}
+#barra-sel .chip{min-height:38px;padding:4px 12px;font-size:13px}
+.btn.pri{background:var(--cz);color:#fff;border-color:var(--cz)}
+.btn.pri[disabled]{opacity:.45}
+body.com-barra{padding-bottom:calc(150px + env(safe-area-inset-bottom))}
+#envio{position:fixed;top:0;left:0;right:0;bottom:0;z-index:30;background:rgba(0,0,0,.45);display:flex;align-items:flex-end}
+.folha{background:#fff;width:100%;max-height:94vh;overflow:auto;border-radius:14px 14px 0 0;padding:14px 14px calc(14px + env(safe-area-inset-bottom))}
+.folha h2{margin:0 0 6px;font-size:18px}
+#env-txt{width:100%;min-height:210px;margin-top:8px;padding:10px;border:1.5px solid var(--bd);border-radius:8px;font:14px/1.4 system-ui;color:var(--tx);resize:vertical}
 </style>
 </head>
 <body>
@@ -77,6 +101,12 @@ input[type=search],select{width:100%;min-height:44px;margin-top:10px;padding:10p
 </header>
 <div id="aviso-exemplo"></div>
 <div class="tabs" role="tablist" id="abas"></div>
+<section id="painel-busca" hidden>
+  <input type="search" id="busca2" placeholder="Palavra-chave (ex.: elevador)" enterkeyhint="search" autocomplete="off">
+  <div class="modo" id="modo-busca"></div>
+  <select id="mun" aria-label="Município"></select>
+  <div class="recentes" id="recentes"></div>
+</section>
 <div class="chips" id="chips"></div>
 <div class="barra" id="barra">
   <span class="cont" id="cont"></span>
@@ -88,6 +118,21 @@ input[type=search],select{width:100%;min-height:44px;margin-top:10px;padding:10p
   </select>
 </div>
 <main id="lista"></main>
+<div id="barra-sel" hidden>
+  <div class="lin"><span id="qtd-sel"></span><button class="chip" id="todas-sel"></button><button class="chip" id="limpar-sel">Limpar</button></div>
+  <div class="lin"><button class="btn pri" id="env-sel">Enviar no WhatsApp</button></div>
+</div>
+<div id="envio" hidden>
+  <div class="folha" role="dialog" aria-label="Enviar no WhatsApp">
+    <h2>Enviar no WhatsApp</h2>
+    <p class="nota" style="margin:0;color:var(--cz);font-size:14px">Confira ou edite a mensagem. Depois toque em <b>Abrir no WhatsApp</b>, escolha o cliente (ou grupo) e envie. Para mandar a outro cliente, toque de novo no botão.</p>
+    <textarea id="env-txt" rows="12" aria-label="Mensagem"></textarea>
+    <div class="stat" id="env-info"></div>
+    <div class="btns" id="env-btns"></div>
+    <div class="btns mini"><button class="btn" id="env-copiar">📋 Copiar texto</button><button class="btn" id="env-comp" hidden>📤 Compartilhar</button><button class="btn" id="env-fechar">Fechar</button></div>
+    <div class="stat" id="env-aviso" hidden></div>
+  </div>
+</div>
 <button id="mais" hidden>Mostrar mais</button>
 <p class="rodape" id="rodape"></p>
 
@@ -98,13 +143,16 @@ const DADOS = __DADOS_JSON__;
 const itens = DADOS.itens || [];
 const POR_PAGINA = 25;
 const ESFERA = {F:"Federal", E:"Estadual", M:"Municipal", D:"Distrital", S:"Sistema S"};
-const est = {aba:"rel", q:"", ramos:new Set(), prazo7:false, novas:false, extras:false, outros:false, ordem:"prazo", n:POR_PAGINA};
+const est = {aba:"rel", q:"", qb:"", modoq:"todas", mun:"", ramos:new Set(), prazo7:false, novas:false, extras:false, soNicho:false, ordem:"prazo", n:POR_PAGINA};
 
 /* armazenamento local (pode não existir em alguns navegadores) */
 function lerLS(k, pad){ try{ const v=localStorage.getItem(k); return v?JSON.parse(v):pad; }catch(e){ return pad; } }
 function gravarLS(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} }
 let salvas = lerLS("lic_salvas", {});
 est.ordem = lerLS("lic_ordem", "prazo");
+let buscas = lerLS("lic_buscas", []);
+const sel = new Map();                       /* licitações marcadas para enviar (id -> item) */
+let modoSel = false, Lcorrente = [];
 
 /* helpers */
 function h(tag, attrs){
@@ -233,6 +281,8 @@ const FONTES = [
    desc:"Compras da FINDES, SENAI-ES e SESI-ES. Para participar, é preciso cadastro no portal."},
   {chave:"SENAC ES", nome:"SENAC ES – Licitações", app:true, url:"https://es.senac.br/licitacoes",
    desc:"Editais do Senac no Espírito Santo (pregões, concorrências, leilões abertos)."},
+  {chave:"Portal de Compras Públicas", nome:"Portal de Compras Públicas (PCP)", app:true, url:"https://www.portaldecompraspublicas.com.br/processos?uf=100132",
+   desc:"Processos de prefeituras e órgãos do ES em andamento no PCP. O que o PCP também enviou ao PNCP aparece uma vez só (a versão do PNCP). O texto do objeto vem cortado em cerca de 250 letras: abra o processo no portal para ler inteiro."},
   {nome:"Portal de Compras do Governo do ES", app:false, url:"https://compras.es.gov.br",
    desc:"Compras do Governo do Estado (cadastro de fornecedores e consultas de licitações). Muito do que publicam também aparece no PNCP."},
   {nome:"Diário Oficial dos Municípios do ES (AMUNES)", app:false, url:"https://www.diariomunicipal.es.gov.br",
@@ -245,6 +295,9 @@ function prep(it){
   if(it._p) return it;
   it._p = true; it._f = dt(it.fecha); it._pub = dt(it.pub); it._v = dt(it.visto);
   it._b = semAcento([it.objeto,it.orgao,it.unidade,it.mun,it.num,it.mod,it.origem,(it.ramos||[]).join(" "),(it.possivel||[]).join(" ")].join(" "));
+  it._i = semAcento((it.itens||[]).map(x=>(x&&x[1])||"").join(" "));                 /* texto dos itens (quando já foram lidos) */
+  it._sb = " "+it._b.replace(/[^a-z0-9]+/g," ")+" ";                                 /* para a aba Busca: palavras separadas por espaço */
+  it._si = it._i ? " "+it._i.replace(/[^a-z0-9]+/g," ")+" " : "";
   return it;
 }
 itens.forEach(prep);
@@ -260,7 +313,29 @@ function prazo(it){
   const dd = Math.floor(hrs/24);
   return {txt:"Encerra em "+dd+" dia"+(dd>1?"s":"")+" ("+fmtData(d)+")", cls: dd<=2?"u1":dd<=7?"u2":"u3", dias:dd};
 }
-const ehNova = it => it._v && gerado && (gerado - it._v) < 36*36e5;
+const termosVisiveis = it => (it.termos||[]).filter(t=>t.indexOf("re:")!==0);      /* padrões técnicos (re:...) não aparecem para a pessoa */
+const ehNova = it => it._v && gerado && it._v <= gerado && (gerado - it._v) < 36*36e5;     /* 'visto' no futuro = fonte lida pela 1ª vez, não é nova */
+/* ordem 'mais recentes': fontes sem data de publicação (SENAC, Portal de Compras) usam o dia em que o app as viu; na 1ª leitura ficam no fim */
+const chaveRecente = it => { const p=it._pub?+it._pub:0, v=it._v?+it._v:0, g=+gerado;
+  if(it.fonte && (!p || p>g)) return (v && v<=g) ? v : 0;
+  return p; };
+
+/* ---------- aba Busca: todas as abertas, por palavra-chave ---------- */
+const palavrasDe = s => semAcento(s).split(/[^a-z0-9]+/).filter(Boolean);
+const temPalavra = (texto, w) => texto.indexOf(" "+w+(w.length<=3?" ":""))>=0;       /* começo de palavra; até 3 letras só palavra inteira */
+const achou = (texto, ps) => est.modoq==="qualquer" ? ps.some(w=>temPalavra(texto,w)) : ps.every(w=>temPalavra(texto,w));
+const munDe = i => (i.mun||"").replace(/\/[A-Za-z]{2}$/,"").trim();
+function realcar(txt, ps){
+  const ac = semAcento(txt);
+  if(ac.length!==txt.length) return txt;
+  const m = new Array(txt.length).fill(false), alfa = c => /[a-z0-9]/.test(c||"");
+  ps.forEach(w=>{ let p=0; while((p=ac.indexOf(w,p))>=0){
+    if((p===0 || !alfa(ac[p-1])) && (w.length>3 || !alfa(ac[p+w.length]))){ let k=p+w.length; while(alfa(ac[k])) k++; for(let j=p;j<k;j++) m[j]=true; }
+    p += w.length; } });
+  const out = []; let ini = 0;
+  for(let k=1;k<=txt.length;k++) if(k===txt.length || m[k]!==m[ini]){ const t=txt.slice(ini,k); out.push(m[ini]?h("mark",null,t):t); ini=k; }
+  return out;
+}
 
 /* ---------- lista filtrada ---------- */
 const noNicho = i => (i.ramos && i.ramos.length) || (i.possivel && i.possivel.length);
@@ -269,14 +344,21 @@ function base(){
   if(est.aba==="sal"){
     return Object.keys(salvas).map(id=>{ const atual=itens.find(i=>i.id===id); return prep(atual||salvas[id]); });
   }
+  if(est.aba==="busca") return itens;                                  /* Busca = tudo que está aberto no ES */
   if(est.aba==="rel") return itens.filter(i=>i.ramos && i.ramos.length);
-  return est.outros ? itens : itens.filter(noNicho);              /* Todas = só o seu nicho (relevantes + possíveis), a menos que peça os outros */
+  return est.soNicho ? itens.filter(noNicho) : itens;              /* Todas = tudo que está aberto no ES; "Só o meu nicho" reduz a relevantes + possíveis */
 }
 function filtrar(){
   let L = base();
   if(est.ramos.size && (est.aba==="rel" || est.aba==="todas")) L = L.filter(i=>(est.aba==="rel"?(i.ramos||[]):dosRamos(i)).some(r=>est.ramos.has(r)));
-  const q = semAcento(est.q).split(/\s+/).filter(Boolean);
-  if(q.length) L = L.filter(i=>q.every(w=>i._b.indexOf(w)>=0));
+  if(est.aba==="busca"){
+    const ps = palavrasDe(est.qb);
+    if(ps.length) L = L.filter(i=>achou(i._sb+i._si, ps));
+    if(est.mun) L = L.filter(i=>munDe(i)===est.mun);
+  } else {
+    const q = semAcento(est.q).split(/\s+/).filter(Boolean);
+    if(q.length) L = L.filter(i=>q.every(w=>i._b.indexOf(w)>=0));
+  }
   if(est.prazo7) L = L.filter(i=>{ const p=prazo(i); return p.dias>=0 && p.dias<=7; });
   if(est.novas) L = L.filter(ehNova);
   if(est.extras) L = L.filter(i=>i.fonte);
@@ -284,7 +366,7 @@ function filtrar(){
   const o = est.ordem;
   L = L.slice().sort((a,b)=>{
     if(o==="valor") return (b.valor||0)-(a.valor||0);
-    if(o==="recente") return (b._pub||0)-(a._pub||0);
+    if(o==="recente") return chaveRecente(b)-chaveRecente(a);
     if(o==="relev") return (b.score||0)-(a.score||0) || fim(a)-fim(b);
     return fim(a)-fim(b);
   });
@@ -296,11 +378,60 @@ function linhaDoc(a){
   return h("div",{class:"doc2"}, h("span",{class:"nome",text:"📄 "+nome}), botoesArquivo(a[2], a[0]));
 }
 
+/* ---------- selecionar e enviar por WhatsApp ---------- */
+const LIMITE_LINK = 2600;                                      /* o WhatsApp recusa links muito longos: divido em partes */
+function textoDe(it){
+  const obj = (it.objeto||"(sem descrição)").replace(/[*_~]/g,"").replace(/\s+/g," ").trim();
+  const v = (it.valor!=null && it.valor>1) ? " | "+brl(it.valor) : "";
+  return "*"+(obj.length>170 ? obj.slice(0,167).trimEnd()+"…" : obj)+"*\n"
+    + [it.orgao||it.unidade, munDe(it)].filter(Boolean).join(" – ")+"\n"
+    + (it._f ? "Encerra: "+fmtData(it._f) : "Prazo não informado")+v
+    + ((it.url||it.link) ? "\nLink: "+(it.url||it.link) : "");
+}
+function mensagemSel(){
+  const L = Array.from(sel.values()).sort((a,b)=>(a._f?+a._f:9e15)-(b._f?+b._f:9e15));
+  const ramos = ((est.aba==="rel"||est.aba==="todas") && est.ramos.size) ? Array.from(est.ramos) : [];
+  const topo = "*Licitações abertas no "+(DADOS.uf||"ES")+"*"+(ramos.length?"\nRamo: "+ramos.join(", "):"")
+    +"\n"+L.length+(L.length===1?" licitação":" licitações")+" (consulta de "+fmtData(new Date()).slice(0,10)+")";
+  return [topo].concat(L.map((it,i)=>(i+1)+") "+textoDe(it))).join("\n\n");
+}
+function partesDe(texto){
+  const out = []; let cur = "";
+  texto.split(/\n{2,}/).forEach(b=>{ const t = cur ? cur+"\n\n"+b : b;
+    if(cur && encodeURIComponent(t).length>LIMITE_LINK){ out.push(cur); cur = b; } else cur = t; });
+  if(cur.trim()) out.push(cur);
+  return out.length>1 ? out.map((t,i)=>(i?"*(continuação "+(i+1)+"/"+out.length+")*\n\n":"")+t) : out;
+}
+function atualizarEnvio(){
+  const txt = $("env-txt").value, partes = partesDe(txt), n = sel.size, box = $("env-btns");
+  $("env-info").textContent = n+(n===1?" licitação":" licitações")+" · "+(partes.length<=1 ? "1 mensagem" : partes.length+" mensagens (o link do WhatsApp tem limite de tamanho: envie uma de cada vez, na ordem)");
+  box.replaceChildren.apply(box, partes.map((t,i)=>h("a",{class:"btn pri",href:"https://wa.me/?text="+encodeURIComponent(t),target:"_blank",rel:"noopener",
+    text: partes.length>1 ? "Abrir no WhatsApp – parte "+(i+1)+" de "+partes.length : "Abrir no WhatsApp"})));
+  $("env-btns").hidden = !partes.length;
+}
+function abrirEnvio(){
+  if(!sel.size) return;
+  $("env-txt").value = mensagemSel(); $("env-aviso").hidden = true;
+  $("env-comp").hidden = typeof navigator.share!=="function";
+  $("envio").hidden = false; atualizarEnvio();
+}
+function desenharSelecao(){
+  const mostrar = modoSel && est.aba!=="fon";
+  $("barra-sel").hidden = !mostrar; document.body.classList.toggle("com-barra", mostrar);
+  if(!mostrar) return;
+  const n = sel.size, N = Lcorrente.length;
+  $("qtd-sel").textContent = n===0 ? "Nenhuma selecionada" : n+(n===1?" selecionada":" selecionadas");
+  $("env-sel").textContent = "Enviar no WhatsApp"+(n?" ("+n+")":""); $("env-sel").disabled = n===0;
+  $("todas-sel").textContent = "Marcar as "+N+" da lista"; $("todas-sel").hidden = N===0;
+  $("limpar-sel").hidden = n===0;
+}
+
 /* ---------- cartão ---------- */
 function cartao(it){
   const p = prazo(it);
   const longo = (it.objeto||"").length > 220;
-  const obj = h("p",{class:"obj"+(longo?" cort":""),text:it.objeto||"(sem descrição)"});
+  const psB = est.aba==="busca" ? palavrasDe(est.qb) : [];
+  const obj = h("p",{class:"obj"+(longo?" cort":"")}, psB.length ? realcar(it.objeto||"(sem descrição)", psB) : (it.objeto||"(sem descrição)"));
   const salva = !!salvas[it.id];
   const topo = h("div",{class:"topo"},
     ehNova(it) && h("span",{class:"tag novo",text:"NOVA"}),
@@ -373,21 +504,27 @@ function cartao(it){
     h("div",{class:"btns"},
       h("a",{class:"btn",href:"https://claude.ai/new?q="+pq,target:"_blank",rel:"noopener",text:"Perguntar ao Claude",onclick:aoClicarIA}),
       h("a",{class:"btn",href:"https://chatgpt.com/?q="+pq,target:"_blank",rel:"noopener",text:"Perguntar ao ChatGPT",onclick:aoClicarIA})));
-  const c = h("article",{class:"card "+p.cls},
-    topo, obj,
+  const selBtn = modoSel && h("button",{class:"selbtn"+(sel.has(it.id)?" on":""),text:sel.has(it.id)?"☑ Selecionada":"☐ Selecionar",onclick:ev=>{
+    const b = ev.currentTarget, card = b.closest(".card");
+    if(sel.has(it.id)) sel.delete(it.id); else sel.set(it.id, it);
+    const on = sel.has(it.id); b.classList.toggle("on", on); card.classList.toggle("marcada", on); b.textContent = on ? "☑ Selecionada" : "☐ Selecionar";
+    desenharSelecao(); }});
+  const c = h("article",{class:"card "+p.cls+(sel.has(it.id)?" marcada":"")},
+    selBtn, topo, obj,
     longo && h("button",{class:"mais",text:"ver tudo",onclick:ev=>{ const aberto=obj.classList.toggle("cort"); ev.target.textContent=aberto?"ver tudo":"ver menos"; }}),
     h("div",{class:"meta",text:it.orgao||it.unidade}),
     h("div",{class:"meta",text:onde}),
     h("div",{class:"meta",text:brl(it.valor)+(it.num?(" · nº "+it.num):"")+(it.origem?(" · via "+it.origem):"")}),
     h("div",{class:"prazo",text:p.txt}),
-    (it.termos&&it.termos.length) && h("div",{class:"termos",text:(it.via_itens?"Apareceu pelos itens da licitação: ":((it.ramos&&it.ramos.length)?"Apareceu por: ":"Possível por: "))+it.termos.slice(0,6).join(", ")}),
+    (psB.length>0 && !achou(it._sb, psB)) && h("div",{class:"termos",text:"Palavra encontrada nos itens da licitação."}),
+    termosVisiveis(it).length>0 && h("div",{class:"termos",text:(it.via_itens?"Apareceu pelos itens da licitação: ":((it.ramos&&it.ramos.length)?"Apareceu por: ":"Possível por: "))+termosVisiveis(it).slice(0,6).join(", ")}),
     h("div",{class:"btns"},
       btnEdital,
       it.url && !(edital && it.fonte) && h("a",{class:"btn",href:it.url,target:"_blank",rel:"noopener",text:it.fonte?"Abrir no portal":"Abrir no PNCP"}),
       it.link && /^https?:\/\//i.test(it.link) && h("a",{class:"btn",href:it.link,target:"_blank",rel:"noopener",text:"Sistema de origem"}),
       agenda && h("a",{class:"btn",href:agenda,target:"_blank",rel:"noopener",text:"📅 Agenda"}),
       h("button",{class:"btn"+(salva?" on":""),text:salva?"★ Salva":"☆ Salvar",onclick:()=>{
-        if(salvas[it.id]) delete salvas[it.id]; else { const cp=Object.assign({},it); delete cp._b; delete cp._p; delete cp._f; delete cp._pub; delete cp._v; delete cp._det; salvas[it.id]=cp; }
+        if(salvas[it.id]) delete salvas[it.id]; else { const cp=Object.assign({},it); delete cp._b; delete cp._i; delete cp._sb; delete cp._si; delete cp._p; delete cp._f; delete cp._pub; delete cp._v; delete cp._det; salvas[it.id]=cp; }
         gravarLS("lic_salvas", salvas); desenhar(); }}),
       h("a",{class:"btn",href:wa,target:"_blank",rel:"noopener",text:"Enviar no WhatsApp"}),
       (temDados() || buscavel) && h("button",{class:"btn",text:"📋 Itens e anexos",onclick:()=>{ detalhe.hidden=!detalhe.hidden; if(!detalhe.hidden) abrirDetalhe(); }}),
@@ -400,8 +537,7 @@ function cartao(it){
 const $ = id => document.getElementById(id);
 function desenharAbas(){
   const rel = itens.filter(i=>i.ramos && i.ramos.length).length;
-  const nicho = itens.filter(noNicho).length;
-  const def = [["rel","Relevantes",rel],["todas","Todas",nicho],["sal","Salvas",Object.keys(salvas).length],["fon","Fontes",FONTES.length]];
+  const def = [["rel","Relevantes",rel],["todas","Todas",itens.length],["busca","Busca",itens.length],["sal","Salvas",Object.keys(salvas).length],["fon","Fontes",FONTES.length]];
   const box = $("abas"); box.replaceChildren();
   def.forEach(([k,t,n])=>box.append(h("button",{role:"tab","aria-selected":String(est.aba===k),onclick:()=>{est.aba=k;est.n=POR_PAGINA;desenhar();window.scrollTo(0,0);}},
     h("span",{text:t}), h("small",{text:String(n)}))));
@@ -417,6 +553,7 @@ function statusFonte(f){
       det = " · "+st.lidas+" lidas no painel";
       if(st.fora_do_es) det += ", "+st.fora_do_es+" de outros estados";
       if(st.encerradas) det += ", "+st.encerradas+" já encerradas";
+      if(st.repetidas_no_pncp) det += ", "+st.repetidas_no_pncp+" já estavam no PNCP";
     }
     return h("div",{class:"stat",text:"✔ "+(st.n||0)+((st.n||0)===1?" aberta":" abertas")+" no app"+det+quando+(st.aviso?" · ⚠ "+st.aviso:"")});
   }
@@ -434,38 +571,60 @@ function desenharFontes(){
 }
 function desenharChips(){
   const box = $("chips"); box.replaceChildren();
-  if(est.aba==="sal" || est.aba==="fon"){ box.hidden=true; return; }
+  if(est.aba==="fon"){ box.hidden=true; return; }
   box.hidden=false;
   const mk=(t,on,fn)=>h("button",{class:"chip","aria-pressed":String(on),text:t,onclick:fn});
+  box.append(mk(modoSel?"☑ Selecionando para enviar":"☐ Selecionar para enviar",modoSel,()=>{ modoSel=!modoSel; if(!modoSel) sel.clear(); desenhar(); }));
+  if(est.aba==="sal") return;
   box.append(mk("Encerra em 7 dias",est.prazo7,()=>{est.prazo7=!est.prazo7;est.n=POR_PAGINA;desenhar();}));
   box.append(mk("Só novas",est.novas,()=>{est.novas=!est.novas;est.n=POR_PAGINA;desenhar();}));
   const nExtra = base().filter(i=>i.fonte).length;
   if(nExtra) box.append(mk("Outros portais ("+nExtra+")",est.extras,()=>{est.extras=!est.extras;est.n=POR_PAGINA;desenhar();}));
   if(est.aba==="todas"){
-    const fora = itens.length - itens.filter(noNicho).length;
-    if(fora) box.append(mk("Incluir outros nichos ("+fora+")",est.outros,()=>{est.outros=!est.outros;est.n=POR_PAGINA;desenhar();}));
+    const nn = itens.filter(noNicho).length;
+    if(nn < itens.length) box.append(mk("Só o meu nicho ("+nn+")",est.soNicho,()=>{est.soNicho=!est.soNicho;est.n=POR_PAGINA;desenhar();}));
   }
   if(est.aba==="rel" || est.aba==="todas") (DADOS.ramos||[]).forEach(r=>{
     const n = itens.filter(i=>(est.aba==="rel"?(i.ramos||[]):dosRamos(i)).indexOf(r)>=0).length;
     box.append(mk(r+" ("+n+")",est.ramos.has(r),()=>{ if(est.ramos.has(r)) est.ramos.delete(r); else est.ramos.add(r); est.n=POR_PAGINA; desenhar(); }));
   });
 }
+function desenharRecentes(){
+  const rec = $("recentes");
+  rec.replaceChildren.apply(rec, (buscas.length && !est.qb.trim()) ? [h("span",{class:"rec-t",text:"Recentes:"})].concat(buscas.map(b=>h("button",{class:"chip",text:b,onclick:()=>{ $("busca2").value=b; est.qb=b; est.n=POR_PAGINA; desenhar(); }}))) : []);
+}
+function desenharPainelBusca(){
+  const modo = $("modo-busca");
+  modo.hidden = palavrasDe(est.qb).length < 2;                         /* só faz diferença com 2 palavras ou mais */
+  modo.replaceChildren(
+    h("button",{class:"chip","aria-pressed":String(est.modoq==="todas"),text:"Todas as palavras",onclick:()=>{est.modoq="todas";est.n=POR_PAGINA;desenhar();}}),
+    h("button",{class:"chip","aria-pressed":String(est.modoq==="qualquer"),text:"Qualquer palavra",onclick:()=>{est.modoq="qualquer";est.n=POR_PAGINA;desenhar();}}));
+  const cont = {}; itens.forEach(i=>{ const m=munDe(i); if(m) cont[m]=(cont[m]||0)+1; });
+  const sel = $("mun"), ops = [h("option",{value:"",text:"Todos os municípios"})];
+  Object.keys(cont).sort((a,b)=>a.localeCompare(b,"pt-BR")).forEach(m=>ops.push(h("option",{value:m,text:m+" ("+cont[m]+")"})));
+  sel.replaceChildren.apply(sel, ops); sel.value = est.mun;
+  desenharRecentes();
+}
 function desenhar(){
   desenharAbas(); desenharChips();
-  const fon = est.aba==="fon";
-  $("busca").hidden = fon; $("barra").hidden = fon;
-  if(fon){ $("lista").replaceChildren(); desenharFontes(); $("mais").hidden = true; return; }
-  const L = filtrar();
-  $("cont").textContent = L.length+" resultado"+(L.length===1?"":"s");
+  const fon = est.aba==="fon", bus = est.aba==="busca";
+  $("busca").hidden = fon || bus; $("barra").hidden = fon; $("painel-busca").hidden = !bus;
+  if(bus) desenharPainelBusca();
+  if(fon){ $("lista").replaceChildren(); desenharFontes(); $("mais").hidden = true; desenharSelecao(); return; }
+  const L = filtrar(); Lcorrente = L;
+  const filtrando = bus && (palavrasDe(est.qb).length || est.mun);
+  $("cont").textContent = bus && !filtrando ? L.length+" abertas no "+(DADOS.uf||"ES") : L.length+" resultado"+(L.length===1?"":"s");
   const lista = $("lista"); lista.replaceChildren();
-  if(est.aba==="todas") lista.append(h("p",{class:"intro",text: est.outros
-    ? "Mostrando tudo, inclusive licitações de outros assuntos. Toque em ‘Incluir outros nichos’ para voltar só ao seu nicho."
-    : "Mostrando só o que combina com o seu nicho: as Relevantes e as marcadas ‘Possível’ (têm só um indício, confira). Para ver licitações de outros assuntos, toque em ‘Incluir outros nichos’."}));
+  if(est.aba==="todas") lista.append(h("p",{class:"intro",text: est.soNicho
+    ? "Mostrando só o que combina com o seu nicho: as Relevantes e as marcadas ‘Possível’ (têm só um indício, confira). Toque em ‘Só o meu nicho’ de novo para ver tudo."
+    : "Mostrando todas as licitações abertas no ES que o app leu, de qualquer assunto. Para ver só o seu nicho, toque em ‘Só o meu nicho’ ou escolha um ramo."}));
+  if(bus && !filtrando) lista.append(h("p",{class:"intro",text:"Todas as licitações abertas no ES que o app leu (PNCP e portais), de qualquer assunto. Digite uma palavra-chave para filtrar: a busca olha objeto, órgão, cidade, número e, quando já foram lidos, os itens."}));
   if(!L.length){
-    lista.append(h("p",{class:"vazio",text: est.aba==="sal" ? "Nenhuma licitação salva. Toque em ☆ Salvar nas que quiser acompanhar." : "Nada encontrado com esses filtros."}));
+    lista.append(h("p",{class:"vazio",text: est.aba==="sal" ? "Nenhuma licitação salva. Toque em ☆ Salvar nas que quiser acompanhar." : bus ? "Nada encontrado. Tente outra palavra, só o começo dela (ex.: ‘eletric’) ou ‘Qualquer palavra’." : "Nada encontrado com esses filtros."}));
   } else {
     L.slice(0, est.n).forEach(it=>lista.append(cartao(it)));
   }
+  desenharSelecao();
   $("mais").hidden = L.length <= est.n;
   $("mais").textContent = "Mostrar mais ("+Math.max(L.length-est.n,0)+" restantes)";
 }
@@ -479,8 +638,21 @@ if(gerado){
   if(horas>30){ el.classList.add("velho"); el.textContent += " — dados antigos, confira a atualização automática"; }
 }
 if(DADOS.exemplo) $("aviso-exemplo").append(h("div",{class:"aviso",text:"PRÉVIA COM DADOS FICTÍCIOS: serve só para ver como a tela funciona. Nada aqui é licitação real."}));
-$("rodape").textContent = "Fontes: PNCP (licitações com propostas abertas em "+(DADOS.uf||"")+"), SEST SENAT, FINDES/SENAI/SESI e SENAC ES (veja a aba Fontes). Os filtros por ramo usam palavras-chave (e os itens da licitação) e podem errar: confirme sempre no edital e no sistema de origem antes de decidir.";
+$("rodape").textContent = "Fontes: PNCP (licitações com propostas abertas em "+(DADOS.uf||"")+"), Portal de Compras Públicas, SEST SENAT, FINDES/SENAI/SESI e SENAC ES (veja a aba Fontes). Os filtros por ramo usam palavras-chave (e os itens da licitação) e podem errar: confirme sempre no edital e no sistema de origem antes de decidir.";
 $("busca").addEventListener("input", e=>{ est.q=e.target.value; est.n=POR_PAGINA; desenhar(); });
+$("busca2").addEventListener("input", e=>{ est.qb=e.target.value; est.n=POR_PAGINA; desenhar(); });
+$("busca2").addEventListener("keydown", e=>{ if(e.key==="Enter") e.target.blur(); });
+$("busca2").addEventListener("change", e=>{ const v=e.target.value.trim();
+  if(v.length>=3){ buscas=[v].concat(buscas.filter(x=>x.toLowerCase()!==v.toLowerCase())).slice(0,6); gravarLS("lic_buscas", buscas); setTimeout(desenharRecentes, 400); } });
+$("mun").addEventListener("change", e=>{ est.mun=e.target.value; est.n=POR_PAGINA; desenhar(); });
+$("env-sel").addEventListener("click", abrirEnvio);
+$("limpar-sel").addEventListener("click", ()=>{ sel.clear(); desenhar(); });
+$("todas-sel").addEventListener("click", ()=>{ Lcorrente.forEach(it=>sel.set(it.id, it)); desenhar(); });
+$("env-txt").addEventListener("input", atualizarEnvio);
+$("env-fechar").addEventListener("click", ()=>{ $("envio").hidden = true; });
+$("envio").addEventListener("click", e=>{ if(e.target===$("envio")) $("envio").hidden = true; });
+$("env-copiar").addEventListener("click", ()=>{ copiarTexto($("env-txt").value).then(ok=>{ const a=$("env-aviso"); a.hidden=false; a.className="stat"+(ok?" ok":""); a.textContent = ok ? "✔ Texto copiado. Cole na conversa do WhatsApp." : "Não consegui copiar. Segure o dedo no texto, escolha Selecionar tudo e Copiar."; }); });
+$("env-comp").addEventListener("click", ()=>{ try{ navigator.share({text:$("env-txt").value}).catch(()=>{}); }catch(e){} });
 $("ordem").value = est.ordem;
 $("ordem").addEventListener("change", e=>{ est.ordem=e.target.value; gravarLS("lic_ordem", est.ordem); est.n=POR_PAGINA; desenhar(); });
 $("mais").addEventListener("click", ()=>{ est.n+=POR_PAGINA; desenhar(); });

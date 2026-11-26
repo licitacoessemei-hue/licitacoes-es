@@ -8,7 +8,7 @@ O que faz, a cada execução:
      (API pública de consultas do PNCP, sem cadastro nem senha).
   2. Classifica cada uma pelos ramos/palavras-chave de config.json.
   3. Para as licitações relevantes, guarda os arquivos do edital e a lista de itens (API pública do PNCP).
-  4. Lê outras fontes públicas (SEST SENAT, FINDES/SENAI/SESI, SENAC ES) - ver fontes_extra.py.
+  4. Lê outras fontes públicas (Portal de Compras Públicas, SEST SENAT, FINDES/SENAI/SESI, SENAC ES) - ver fontes_extra.py.
   5. Gera docs/index.html (página para o celular, com os dados embutidos) e docs/dados.json.
   6. Opcional: avisa no celular (app ntfy) sobre licitações relevantes NOVAS.
 
@@ -36,6 +36,8 @@ except Exception as _e:                      # sem o arquivo fontes_extra.py o a
     fontes_extra = None
 
 BRT = timezone(timedelta(hours=-3))
+INICIO = time.time()                       # o job do GitHub tem 20 min; o Portal de Compras Públicas usa o que sobrar de 17
+PRAZO_TOTAL_S = int(os.environ.get("COLETOR_PRAZO_TOTAL_S", "1020"))
 BASE_URL = os.environ.get("PNCP_BASE_URL", "https://pncp.gov.br/api/consulta").rstrip("/")
 ENDPOINT = "/v1/contratacoes/proposta"
 API_PNCP = os.environ.get("PNCP_API_URL", "https://pncp.gov.br/api/pncp/v1").rstrip("/")   # arquivos e itens de cada contratação
@@ -500,15 +502,17 @@ def manter_itens_da_ultima_leitura(previo, status, ja_lidos):
     ids = {i["id"] for i in ja_lidos}
     agora, mantidos = agora_brt(), []
     for nome, st in status.items():
-        if st.get("ok"):
+        if st.get("ok") and not st.get("parcial"):
             continue
+        antes = len(mantidos)
         for i in (previo or {}).values():
             fecha = parse_data(i.get("fecha"))
             if i.get("fonte") == nome and i["id"] not in ids and fecha and fecha >= agora:
                 mantidos.append(i)
-        if any(i.get("fonte") == nome for i in mantidos):
-            st["aviso"] = (st.get("aviso") or "falhou") + " – mostrando a última leitura que deu certo"
-            st["n"] = sum(1 for i in mantidos if i.get("fonte") == nome)
+        if len(mantidos) > antes or any(i.get("fonte") == nome for i in mantidos):
+            if not st.get("ok"):
+                st["aviso"] = (st.get("aviso") or "falhou") + " – mostrando a última leitura que deu certo"
+            st["n"] = (st.get("n", 0) if st.get("ok") else 0) + (len(mantidos) - antes)
     return mantidos
 
 
@@ -613,7 +617,20 @@ def main():
 
     fontes_status = {}
     if fontes_extra and not args.sem_extras:
-        brutos, fontes_status = fontes_extra.coletar_todas(cfg)
+        try:
+            brutos, fontes_status = fontes_extra.coletar_todas(cfg, prazo_final=INICIO + PRAZO_TOTAL_S)
+        except TypeError:                                            # fontes_extra.py antigo (arquivo não atualizado)
+            brutos, fontes_status = fontes_extra.coletar_todas(cfg)
+        nome_pcp = (getattr(fontes_extra, "FONTES", {}).get("pcp") or {}).get("nome")   # o PCP envia boa parte ao PNCP: não repete
+        repetidos = [b for b in brutos if nome_pcp and b.get("fonte") == nome_pcp and fontes_extra.repetida_no_pncp(b, itens)]
+        if repetidos:
+            ids_rep = {id(b) for b in repetidos}
+            brutos = [b for b in brutos if id(b) not in ids_rep]
+            st_pcp = fontes_status.get(nome_pcp)
+            if st_pcp is not None:
+                st_pcp["repetidas_no_pncp"] = len(repetidos)
+                st_pcp["n"] = max(0, st_pcp.get("n", 0) - len(repetidos))
+            print("  %d processo(s) do Portal de Compras Públicas já estavam no PNCP e não foram repetidos." % len(repetidos))
         extras = montar_itens_extra(brutos, cfg, previo, carregar_status_previo(caminho_json))
         extras += manter_itens_da_ultima_leitura(previo, fontes_status, extras)
         itens += extras
