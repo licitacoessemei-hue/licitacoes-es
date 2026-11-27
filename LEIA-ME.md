@@ -94,3 +94,7 @@ A aba **Fontes** mostra, para cada portal, quantas licitações entraram, quando
 - **Execução falha com "HTTP 403":** o PNCP recusou o acesso vindo do GitHub. Rode no seu computador (no Brasil): instale o Python 3.9+, abra o terminal na pasta e digite `python coletor.py`. A página sai em `docs/index.html`.
 - **Aparece "dados antigos":** a atualização automática parou. Veja a aba *Actions* no GitHub para ver o erro.
 - **Quer outro estado:** troque `"uf": "ES"` em `config.json`.
+
+## Se o app ficar com a data antiga
+
+Às vezes a coleta funciona, mas o GitHub falha ao **publicar** o site (erro "No artifacts named github-pages were found"): os dados novos ficam salvos no repositório e o app continua mostrando a versão anterior. O arquivo `atualizar.yml` desta versão espera alguns segundos e tenta publicar até 3 vezes. Se mesmo assim falhar, abra *Actions*, entre na execução com o X vermelho e toque em **Re-run failed jobs**.

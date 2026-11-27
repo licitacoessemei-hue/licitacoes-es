@@ -616,22 +616,40 @@ def _sem_imagens(route):
         pass
 
 
-def _ler_pagina_pcp(page, url, limite):
+def _anotar_pagina_pcp(page, diag, resposta, erro):
+    """Guarda no diagnóstico o que o portal entregou quando a lista não aparece (vai para o dados.json)."""
+    try:
+        if resposta is not None:
+            diag["http"] = resposta.status
+        if erro:
+            diag["erro"] = _limpar(str(erro).splitlines()[0], 160)
+        diag["url_final"] = _limpar(page.url, 160)
+        diag["titulo"] = _limpar(page.title(), 100)
+        diag["texto"] = _limpar(page.evaluate("() => (document.body && document.body.innerText || '').slice(0, 600)"), 300)
+    except Exception:                                                  # noqa: BLE001
+        pass
+
+
+def _ler_pagina_pcp(page, url, limite, diag=None):
     """Abre uma página da lista e devolve os cartões. A lista chega depois da página (aparece 'carregando' e
-    '0 Registros' por alguns segundos), então espero os cartões aparecerem; 2 tentativas."""
+    '0 Registros' por alguns segundos), então espero os cartões aparecerem; 2 tentativas.
+    Se não aparecerem e diag for um dict, ele recebe o que o portal respondeu (para eu conferir depois)."""
     for _ in range(2):
         espera = int(min(ESPERA_PAGINA_PCP, limite - time.time() - 5) * 1000)
         if espera < 3000:
             return []
+        resposta = erro = None
         try:
-            page.goto(url, wait_until="domcontentloaded", timeout=min(60000, espera))
+            resposta = page.goto(url, wait_until="domcontentloaded", timeout=min(60000, espera))
             page.wait_for_selector("article", timeout=espera)
             page.wait_for_timeout(400)
             achados = page.evaluate(_JS_CARTOES)
             if achados:
                 return achados
-        except Exception:                                              # noqa: BLE001
-            pass
+        except Exception as e:                                         # noqa: BLE001
+            erro = e
+        if diag is not None and "texto" not in diag:
+            _anotar_pagina_pcp(page, diag, resposta, erro)
     return []
 
 
@@ -650,6 +668,7 @@ def ler_pcp(chave="pcp", log=print, prazo_final=None):
         return [], status
     from playwright.sync_api import sync_playwright
     cartoes, vistos, paginas, falhas, parou = [], set(), 0, [], ""
+    diag_pcp, problemas = {}, []
     with sync_playwright() as p:
         navegador = _abrir_navegador(p, log)
         try:
@@ -657,11 +676,25 @@ def ler_pcp(chave="pcp", log=print, prazo_final=None):
                                         viewport={"width": 1280, "height": 900})
             ctx.route("**/*", _sem_imagens)
             page = ctx.new_page()
+            def _resp(r):
+                try:
+                    if r.status >= 400 and len(problemas) < 6:
+                        problemas.append("%d %s" % (r.status, _limpar(r.url, 90)))
+                except Exception:                                      # noqa: BLE001
+                    pass
+            def _falhou(rq):
+                try:
+                    if len(problemas) < 6:
+                        problemas.append("falhou %s" % _limpar(rq.url, 90))
+                except Exception:                                      # noqa: BLE001
+                    pass
+            page.on("response", _resp)
+            page.on("requestfailed", _falhou)
             for n in range(1, MAX_PAGINAS_PCP + 1):
                 if time.time() > limite - 20:
                     parou = "tempo"
                     break
-                achados = _ler_pagina_pcp(page, _url_pcp(cfg["url"], n), limite)
+                achados = _ler_pagina_pcp(page, _url_pcp(cfg["url"], n), limite, diag_pcp if not paginas else None)
                 if not achados:
                     falhas.append(n)
                     if len(falhas) >= 2 and (not paginas or falhas[-2] == n - 1):
@@ -731,6 +764,10 @@ def ler_pcp(chave="pcp", log=print, prazo_final=None):
         status["paginas_sem_resposta"] = falhas
     if not cartoes:
         status.update(ok=False, aviso="a lista de processos não carregou (o site pode ter mudado ou estava lento)")
+        if problemas:
+            diag_pcp["pedidos"] = problemas[:6]
+        if diag_pcp:
+            status["diag"] = diag_pcp
     elif cartoes and sem_data >= max(1, len(cartoes) // 2):
         status.update(ok=False, aviso="não consegui entender as datas da lista (%d de %d cartões)" % (sem_data, len(cartoes)))
         if cartoes:
